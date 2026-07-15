@@ -1,8 +1,12 @@
 package gui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"rateio-luz/internal/history"
 
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
@@ -10,9 +14,15 @@ import (
 
 func newTestScreen(t *testing.T) *screen {
 	t.Helper()
+	store := history.NewStore(filepath.Join(t.TempDir(), "historico.csv"))
+	return newTestScreenWithStore(t, store)
+}
+
+func newTestScreenWithStore(t *testing.T, store historyStore) *screen {
+	t.Helper()
 	application := test.NewApp()
 	application.Settings().SetTheme(NewTheme())
-	s := newScreen(application)
+	s := newScreenWithStore(application, store)
 	s.window.Show()
 	t.Cleanup(func() {
 		s.window.Close()
@@ -33,11 +43,26 @@ func TestScreenIdentityAndInitialState(t *testing.T) {
 	if s.clearButton.Text != "Limpar" {
 		t.Errorf("clear button = %q", s.clearButton.Text)
 	}
+	if len(s.tabs.Items) != 2 || s.tabs.Items[0].Text != "Rateio" || s.tabs.Items[1].Text != "Histórico" {
+		t.Fatalf("tabs = %+v, want Rateio and Histórico", s.tabs.Items)
+	}
+	if s.tabs.Selected() != s.rateioTab {
+		t.Fatal("Rateio should be the initially selected tab")
+	}
 	if s.resultCard.Visible() || s.errorBox.Visible() {
 		t.Fatal("feedback should be hidden before the first calculation")
 	}
+	if !s.saveButton.Disabled() || s.snapshot != nil {
+		t.Fatal("saving should be unavailable before a valid calculation")
+	}
 	if s.consumption1Entry.PlaceHolder == "" || s.totalAmountEntry.PlaceHolder == "" {
 		t.Fatal("input examples should be visible as placeholders")
+	}
+	if s.footerLabel == nil {
+		t.Fatal("footer label was not created")
+	}
+	if s.footerLabel.Text != "Noguires-Pires\nAll rights reserved." {
+		t.Fatalf("footer = %q, want requested rights notice", s.footerLabel.Text)
 	}
 }
 
@@ -73,6 +98,97 @@ func TestCalculateDisplaysOrganizedResultAndReconciliation(t *testing.T) {
 	}
 	if got := s.reconciliationValue.Text; got != "Conferência: R$ 112,84 + R$ 71,88 = R$ 184,72. Total conferido." {
 		t.Errorf("reconciliation = %q", got)
+	}
+	if s.saveButton.Disabled() {
+		t.Fatal("a valid calculation should enable saving")
+	}
+	if s.snapshot == nil {
+		t.Fatal("a valid calculation should prepare a history snapshot")
+	}
+	if s.snapshot.Consumption1 != "105,5 kWh" || s.snapshot.Consumption2 != "67,2 kWh" || s.snapshot.TotalAmount != "R$ 184,72" {
+		t.Errorf("snapshot inputs = %+v", s.snapshot)
+	}
+}
+
+func TestSaveAndLoadHistoryUsingTemporaryPath(t *testing.T) {
+	store := history.NewStore(filepath.Join(t.TempDir(), "historico.csv"))
+	s := newTestScreenWithStore(t, store)
+	fixedDate := time.Date(2026, time.July, 15, 14, 30, 0, 0, time.Local)
+	s.now = func() time.Time { return fixedDate }
+	s.consumption1Entry.SetText("10")
+	s.consumption2Entry.SetText("30")
+	s.totalAmountEntry.SetText("80")
+
+	test.Tap(s.calculateButton)
+	if s.saveButton.Disabled() {
+		t.Fatal("save button should be enabled after calculation")
+	}
+	test.Tap(s.saveButton)
+
+	if !s.saveButton.Disabled() {
+		t.Fatal("save button should be disabled after the snapshot is saved")
+	}
+	if !s.saveStatus.Visible() || !strings.Contains(s.saveStatus.Text, "Rateio salvo") {
+		t.Fatalf("save confirmation = %q", s.saveStatus.Text)
+	}
+	entries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("List() returned %d entries, want 1", len(entries))
+	}
+	want := history.Entry{
+		Date:             fixedDate,
+		Consumption1:     "10 kWh",
+		Consumption2:     "30 kWh",
+		TotalAmount:      "R$ 80,00",
+		TotalConsumption: "40 kWh",
+		Share1:           "25,00%",
+		Share2:           "75,00%",
+		Amount1:          "R$ 20,00",
+		Amount2:          "R$ 60,00",
+	}
+	if got := entries[0]; !got.Date.Equal(want.Date) || got.Consumption1 != want.Consumption1 ||
+		got.Consumption2 != want.Consumption2 || got.TotalAmount != want.TotalAmount ||
+		got.TotalConsumption != want.TotalConsumption || got.Share1 != want.Share1 ||
+		got.Share2 != want.Share2 || got.Amount1 != want.Amount1 || got.Amount2 != want.Amount2 {
+		t.Errorf("saved entry = %+v, want %+v", got, want)
+	}
+
+	s.tabs.Select(s.historyTab)
+	if len(s.historyEntries) != 1 || len(s.historyList.Objects) != 1 {
+		t.Fatalf("history tab has %d entries and %d cards, want 1", len(s.historyEntries), len(s.historyList.Objects))
+	}
+	if s.historyStatusCard.Visible() {
+		t.Fatal("non-empty history should hide the empty state")
+	}
+
+	second := want
+	second.Date = fixedDate.Add(time.Hour)
+	second.TotalAmount = "R$ 90,00"
+	if err := store.Save(second); err != nil {
+		t.Fatalf("saving second entry: %v", err)
+	}
+	test.Tap(s.refreshHistoryButton)
+	if len(s.historyEntries) != 2 || s.historyEntries[1].TotalAmount != "R$ 90,00" {
+		t.Fatalf("updated history = %+v", s.historyEntries)
+	}
+}
+
+func TestHistoryTabShowsEmptyState(t *testing.T) {
+	s := newTestScreen(t)
+
+	s.tabs.Select(s.historyTab)
+
+	if !s.historyStatusCard.Visible() {
+		t.Fatal("empty history should show its state card")
+	}
+	if s.historyStatusCard.Title != "Nenhum rateio salvo ainda" {
+		t.Fatalf("empty state title = %q", s.historyStatusCard.Title)
+	}
+	if len(s.historyEntries) != 0 || len(s.historyList.Objects) != 0 {
+		t.Fatal("empty history should not render entry cards")
 	}
 }
 
