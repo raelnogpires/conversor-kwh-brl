@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Ícone do Rateio Luz</title>
+  <description id="description">Um raio sobre duas casas separadas, em azul-marinho e branco-gelo.</description>
+  <path d="M112 0h288c62 0 112 50 112 112v288c0 62-50 112-112 112H112C50 512 0 462 0 400V112C0 50 50 0 112 0Z" fill="#F8F5EC"/>
+  <path d="M136 44h240c51 0 92 41 92 92v240c0 51-41 92-92 92H136c-51 0-92-41-92-92V136c0-51 41-92 92-92Z" fill="#123B5D"/>
+  <path d="M283 91 173 267h76l-25 154 115-193h-78z" fill="#F8F5EC"/>
+  <path d="m88 338 69-57 69 57v77H88z" fill="#35B7C9"/>
+  <path d="m286 338 69-57 69 57v77H286z" fill="#35B7C9"/>
+  <path d="M111 349h92v66h-92zm198 0h92v66h-92z" fill="#F8F5EC"/>
+  <path d="M244 315h24v112h-24z" fill="#123B5D"/>
+</svg>

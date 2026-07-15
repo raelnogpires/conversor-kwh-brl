@@ -1,0 +1,12 @@
+[Details]
+  Icon = "assets/rateio-luz.png"
+  Name = "Rateio Luz"
+  ID = "com.raelpires.rateioluz"
+  Version = "1.0.0"
+  Build = 1
+
+[LinuxAndBSD]
+  GenericName = "Rateio de conta de energia"
+  Categories = ["Utility"]
+  Comment = "Divide uma conta de luz entre dois inquilinos"
+  Keywords = ["energia", "conta", "rateio", "kWh"]

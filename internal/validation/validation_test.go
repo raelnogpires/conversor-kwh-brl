@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"rateio-luz/internal/calculator"
 )
 
 func TestParseConsumptionAcceptsCommaAndDot(t *testing.T) {
@@ -70,6 +72,78 @@ func TestParseAndValidateRelationship(t *testing.T) {
 	}
 	if input.TotalAmountCents != 0 {
 		t.Errorf("bill = %d", input.TotalAmountCents)
+	}
+}
+
+func TestParseAndValidateRejectsZeroAndNegativeValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		first       string
+		second      string
+		bill        string
+		wantMessage string
+	}{
+		{
+			name:        "zero total consumption",
+			first:       "0",
+			second:      "0,00",
+			bill:        "10,00",
+			wantMessage: "o consumo total deve ser maior que zero",
+		},
+		{
+			name:        "negative first consumption",
+			first:       "-0,01",
+			second:      "1",
+			bill:        "10,00",
+			wantMessage: "consumo do consumidor 1: não pode ser negativo",
+		},
+		{
+			name:        "negative second consumption",
+			first:       "1",
+			second:      "-0.01",
+			bill:        "10,00",
+			wantMessage: "consumo do consumidor 2: não pode ser negativo",
+		},
+		{
+			name:        "negative bill",
+			first:       "1",
+			second:      "1",
+			bill:        "-0,01",
+			wantMessage: "valor total da conta: não pode ser negativo",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ParseAndValidate(test.first, test.second, test.bill)
+			if err == nil {
+				t.Fatal("ParseAndValidate() error = nil")
+			}
+			if !strings.Contains(err.Error(), test.wantMessage) {
+				t.Errorf("ParseAndValidate() error = %q, want it to contain %q", err, test.wantMessage)
+			}
+		})
+	}
+}
+
+func TestDecimalBRLParsingFlowsIntoExactCalculation(t *testing.T) {
+	input, err := ParseAndValidate("105,5", "67,2", "184,72")
+	if err != nil {
+		t.Fatalf("ParseAndValidate() error = %v", err)
+	}
+	if input.TotalAmountCents != 18472 {
+		t.Fatalf("TotalAmountCents = %d, want 18472", input.TotalAmountCents)
+	}
+
+	result, err := calculator.Calculate(input.Consumption1, input.Consumption2, input.TotalAmountCents)
+	if err != nil {
+		t.Fatalf("calculator.Calculate() error = %v", err)
+	}
+	if result.Amount1Cents != 11284 || result.Amount2Cents != 7188 {
+		t.Errorf("amounts = %d and %d, want 11284 and 7188", result.Amount1Cents, result.Amount2Cents)
+	}
+	if got := result.Amount1Cents + result.Amount2Cents; got != input.TotalAmountCents {
+		t.Errorf("amount sum = %d, want parsed bill %d", got, input.TotalAmountCents)
 	}
 }
 
