@@ -1,158 +1,104 @@
 # Conversor kWh-BRL
 
-Aplicação para dividir proporcionalmente o valor de uma conta de energia elétrica entre dois consumidores, com base no consumo individual registrado em kWh.
+Aplicação de terminal em Go que divide o valor de uma conta de energia entre dois consumidores, proporcionalmente ao consumo individual em kWh. Ela resolve o caso de dois espaços com medidores próprios que recebem uma única conta da concessionária.
 
-## Problema
+## Entradas e saídas
 
-A residência possui dois espaços independentes, mas ambos compartilham a mesma conta de energia elétrica.
+O programa solicita:
 
-Cada espaço possui um medidor que informa seu consumo individual em kWh. Entretanto, a concessionária emite apenas uma conta com o valor total em reais.
+1. consumo do consumidor 1 em kWh;
+2. consumo do consumidor 2 em kWh;
+3. valor total da conta em reais (BRL).
 
-O programa recebe:
+Ele apresenta o consumo total, a proporção exata e a porcentagem formatada de cada consumidor e os dois valores a pagar. Exemplo:
 
-* consumo do consumidor 1 em kWh;
-* consumo do consumidor 2 em kWh;
-* valor total da conta em reais.
+```text
+Consumo do consumidor 1 (kWh): 105,5
+Consumo do consumidor 2 (kWh): 67,2
+Valor total da conta (R$): 184,72
 
-Como resultado, informa quanto cada consumidor deve pagar proporcionalmente ao seu consumo.
+Resultado
+Consumo total: 172,7 kWh
+Proporção consumidor 1: 1055/1727 (61,09%)
+Proporção consumidor 2: 672/1727 (38,91%)
+Consumidor 1 paga: R$ 112,84
+Consumidor 2 paga: R$ 71,88
+```
 
 ## Regra de cálculo
 
-Primeiro, o programa calcula o consumo total:
+Os cálculos usam estas fórmulas:
 
 ```text
-consumo total = consumo 1 + consumo 2
+totalConsumption = consumption1 + consumption2
+share1 = consumption1 / totalConsumption
+share2 = consumption2 / totalConsumption
+amount1 = arredondar(totalAmountCents × share1)
+amount2 = totalAmountCents - amount1
 ```
 
-Depois, determina a proporção de consumo de cada consumidor:
+As proporções são obtidas por divisão e permanecem como valores racionais exatos. Por isso, `share1 + share2` é exatamente 1. O valor do consumidor 1 é arredondado para o centavo mais próximo; um resultado exatamente no meio do centavo é arredondado para cima (*half-up*). O consumidor 2 recebe o restante. Assim, os pagamentos sempre somam exatamente o total da conta.
 
-```text
-proporção 1 = consumo 1 / consumo total
-proporção 2 = consumo 2 / consumo total
-```
+Essa política é determinística e simples, mas atribui ao consumidor 2 qualquer diferença causada pelo arredondamento. Outras políticas poderiam alternar quem recebe o restante ou distribuí-lo por outro critério; esta versão prioriza a conservação exata do total e uma regra previsível.
 
-Por fim, aplica essas proporções ao valor total da conta:
+## Representação numérica
 
-```text
-valor 1 = valor total da conta × proporção 1
-valor 2 = valor total da conta × proporção 2
-```
+Dinheiro é interpretado sem `float64` e armazenado como `int64` em centavos. Isso evita resultados binários aproximados como `184.719999...` e torna exata a soma dos pagamentos. O limite é `math.MaxInt64` centavos.
 
-A soma dos dois valores deve corresponder ao valor total da conta:
+Uma biblioteca decimal de ponto fixo também poderia representar dinheiro com segurança e oferecer mais escalas e operações, mas exigiria uma dependência externa ou uma implementação mais complexa. Centavos inteiros são suficientes para BRL nesta aplicação e mantêm o projeto apenas com a biblioteca padrão.
 
-```text
-valor 1 + valor 2 = valor total da conta
-```
+Consumo não é dinheiro e pode ter mais casas decimais. Ele usa `math/big.Rat`, que conserva exatamente os decimais informados e permite proporções exatas, sem as aproximações de `float64`.
 
-## Exemplo
+## Validação e limitações da entrada
 
-Dados de entrada:
+- vírgula ou ponto é aceito como único separador decimal;
+- não são aceitos separadores de milhares, formatos mistos, notação científica, `NaN` ou infinito;
+- cada parte ao redor do separador deve conter ao menos um dígito (`.5` e `5,` não são aceitos);
+- valores monetários aceitam no máximo duas casas decimais;
+- consumos e conta negativos são rejeitados;
+- zero é válido para um consumidor e para o valor da conta;
+- os dois consumos iguais a zero são inválidos, pois a proporção ficaria indefinida;
+- espaços externos são ignorados, mas entradas vazias e textos malformados são rejeitados.
 
-```text
-Consumidor 1: 105,5 kWh
-Consumidor 2: 67,2 kWh
-Conta total: R$ 184,72
-```
+Um único ponto ou uma única vírgula sempre significa separador decimal. Para evitar ambiguidade, não digite agrupamento de milhares: use `1234,56`, e não `1.234,56`.
 
-Consumo total:
+## Executar, compilar e testar
 
-```text
-105,5 + 67,2 = 172,7 kWh
-```
-
-Resultado aproximado:
-
-```text
-Consumidor 1: R$ 112,85
-Consumidor 2: R$ 71,87
-```
-
-## Validações esperadas
-
-O programa deve rejeitar:
-
-* consumos negativos;
-* valor da conta negativo;
-* consumo total igual a zero;
-* entradas vazias;
-* textos que não possam ser convertidos em números.
-
-Consumo individual igual a zero é permitido, desde que o outro consumidor tenha consumo maior que zero.
-
-## Estrutura planejada
-
-```text
-conversor-kwh-brl/
-├── cmd/
-│   └── app/
-├── internal/
-│   ├── calculator/
-│   └── validation/
-├── assets/
-├── go.mod
-├── README.md
-└── LICENSE.md
-```
-
-Responsabilidades:
-
-* `internal/calculator`: regra de divisão proporcional da conta;
-* `internal/validation`: validação dos valores recebidos;
-* `cmd/app`: inicialização do programa e montagem da interface;
-* `assets`: ícones e outros recursos visuais.
-
-Durante o primeiro estágio, o projeto pode utilizar uma estrutura reduzida:
-
-```text
-conversor-kwh-brl/
-├── main.go
-├── go.mod
-├── README.md
-└── LICENSE.md
-```
-
-A separação em pacotes será feita depois que a regra principal estiver implementada e testada.
-
-## Requisitos
-
-* Go 1.24 ou superior.
-
-## Executando o projeto
-
-Na raiz do projeto:
+É necessário Go 1.25.1 ou versão compatível com o `go.mod`. Na raiz do projeto:
 
 ```bash
-go run .
+go run ./cmd
+go build -o conversor-kwh-brl ./cmd
+go test ./...
 ```
 
-Para gerar um executável:
-
-```bash
-go build -o conversor-kwh-brl .
-```
-
-No Windows:
+No Windows, o build pode ser gerado com:
 
 ```powershell
-go build -o conversor-kwh-brl.exe .
+go build -o conversor-kwh-brl.exe ./cmd
 ```
 
-## Escopo inicial
+## Arquitetura
 
-A primeira versão será executada no terminal e terá como objetivo validar a regra de negócio.
+```text
+cmd/main.go                        orquestra entrada, validação, cálculo e apresentação
+internal/data/input.go             lê somente as três strings do terminal
+internal/validation/validation.go  converte e valida consumo e dinheiro
+internal/calculator/calculator.go  contém a regra de domínio, sem terminal ou formatação
+```
 
-A interface gráfica será adicionada posteriormente, sem alterar a lógica central do cálculo.
+As validações de domínio também existem no calculador, de modo que ele continua seguro se for reutilizado por outra interface. A apresentação em português e a formatação em BRL ficam fora da regra de cálculo.
 
-## Possíveis evoluções
+## Evoluções possíveis
 
-* interface gráfica para Linux e Windows;
-* suporte a mais de dois consumidores;
-* histórico de cálculos;
-* exportação de comprovantes;
-* configuração de arredondamento;
-* testes automatizados;
-* geração de executáveis para diferentes sistemas operacionais.
+- interface gráfica para Linux e Windows reutilizando os pacotes internos;
+- divisão entre mais de dois consumidores;
+- política configurável para distribuição do restante;
+- histórico e exportação de comprovantes.
 
 ## Licença
 
-Este projeto está licenciado sob a licença MIT. Consulte o arquivo [LICENSE.md](LICENSE.md) para mais informações.
+Distribuído sob a licença MIT. Consulte [LICENSE.md](LICENSE.md).
+Ela permite usar, modificar, redistribuir, sublicenciar e explorar
+comercialmente o projeto, desde que o aviso de copyright e o texto da licença
+sejam preservados nas cópias ou partes substanciais do software.
