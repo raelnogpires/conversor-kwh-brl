@@ -6,7 +6,9 @@ gráfica para Linux e Windows, feita com [Fyne](https://fyne.io/), e mantém a
 interface de linha de comando (CLI) original. As duas interfaces reutilizam a
 mesma validação e a mesma regra de cálculo.
 
-Não há cadastro, banco de dados, acesso à rede ou armazenamento de histórico.
+Não há cadastro, banco de dados nem acesso à rede. Na interface gráfica, os
+rateios que o usuário escolher salvar ficam em um arquivo CSV local e podem ser
+consultados ou excluídos pela aba **Histórico**.
 
 ## Como funciona
 
@@ -55,6 +57,11 @@ reiniciar o programa.
 
 A tecla `Enter` avança pelos campos e, no campo do valor da conta, executa o
 cálculo. A navegação por teclado e o foco do campo inválido são preservados.
+
+Depois de calcular, o botão **Salvar no histórico** grava uma cópia textual do
+resultado no diretório de configuração do usuário. A aba **Histórico** lista os
+rateios salvos e permite excluir registros individualmente. O arquivo permanece
+local ao dispositivo e não é enviado pela rede.
 
 ### Interface de linha de comando
 
@@ -310,6 +317,7 @@ internal/
   calculator/                regra proporcional e reconciliação monetária
   data/                      leitura das três entradas da CLI
   gui/                       janela, tema, interação e mensagens da GUI
+  history/                   persistência e exclusão de rateios em arquivo CSV
   presentation/              formatação compartilhada de BRL, kWh e percentual
   validation/                conversão e validação compartilhadas
 ```
@@ -318,10 +326,28 @@ Os pacotes `validation`, `calculator` e `presentation` não dependem da GUI. A
 camada `gui` apenas coleta os dados, chama esses pacotes e exibe o resultado;
 ela não contém uma cópia das fórmulas de rateio.
 
+### Ordem sugerida de leitura
+
+Para conhecer o projeto sem começar pelo arquivo maior, leia nesta ordem:
+
+1. `cmd/main.go`, que mostra o fluxo completo com poucos detalhes de interface;
+2. `internal/validation/validation.go`, que transforma texto em valores de domínio;
+3. `internal/calculator/calculator.go`, que contém a regra de rateio;
+4. `internal/presentation/format.go`, que prepara os valores para exibição;
+5. `internal/history/store.go`, que grava e recupera o CSV local;
+6. `main.go` e `internal/gui/app.go`, que montam a aplicação desktop;
+7. `internal/gui/theme.go`, que personaliza o tema visual do Fyne.
+
+O arquivo [`codemap.md`](codemap.md) resume a arquitetura e aponta para mapas
+mais detalhados dentro de cada diretório.
+
 ## Limitações atuais
 
 - o rateio é fixo para exatamente dois moradores;
-- não há histórico, exportação, impressão nem persistência dos cálculos;
+- o histórico é local e textual; não há sincronização, exportação nem impressão;
+- o arquivo de histórico não possui locking entre instâncias simultâneas;
+- percentuais são arredondados separadamente e podem somar visualmente `99,99%`
+  ou `100,01%`, embora as proporções internas permaneçam exatas;
 - não são aceitos separadores de milhares nem notação científica;
 - o morador 2 recebe a eventual diferença de um centavo do arredondamento;
 - os pacotes gerados localmente não são assinados digitalmente e não constituem

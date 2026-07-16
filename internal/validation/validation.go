@@ -1,4 +1,5 @@
-// Package validation parses and validates user-provided decimal values.
+// Package validation interpreta e valida valores decimais fornecidos pelo
+// usuário antes que eles entrem nas regras de domínio.
 package validation
 
 import (
@@ -8,14 +9,21 @@ import (
 	"strings"
 )
 
-// Input contains validated domain values. TotalAmountCents is integer cents.
+// Input contém os valores já validados para o domínio. Os consumos ficam em
+// big.Rat para representar exatamente o decimal digitado, e TotalAmountCents
+// fica em centavos inteiros para que dinheiro nunca dependa de ponto
+// flutuante. A invariante produzida por ParseAndValidate é: consumos não
+// negativos, soma dos consumos positiva e valor total não negativo.
 type Input struct {
 	Consumption1     *big.Rat
 	Consumption2     *big.Rat
 	TotalAmountCents int64
 }
 
-// ParseAndValidate parses all terminal fields and validates their relationship.
+// ParseAndValidate interpreta todos os campos do terminal e valida tanto cada
+// valor isolado quanto a relação entre eles. Os erros ganham o nome do campo
+// para que a camada de interface consiga orientar o usuário sem conhecer os
+// detalhes dos parsers.
 func ParseAndValidate(consumption1, consumption2, totalAmount string) (Input, error) {
 	c1, err := ParseConsumption(consumption1)
 	if err != nil {
@@ -35,7 +43,9 @@ func ParseAndValidate(consumption1, consumption2, totalAmount string) (Input, er
 	return Input{Consumption1: c1, Consumption2: c2, TotalAmountCents: amount}, nil
 }
 
-// ParseConsumption parses a non-negative plain decimal without using float64.
+// ParseConsumption interpreta um decimal simples não negativo sem usar
+// float64. Depois de normalizar vírgula/ponto, SetString constrói um big.Rat
+// exato; por exemplo, "0,1" vira 1/10, e não uma aproximação binária.
 func ParseConsumption(text string) (*big.Rat, error) {
 	normalized, negative, err := normalizeDecimal(text, -1)
 	if err != nil {
@@ -51,8 +61,10 @@ func ParseConsumption(text string) (*big.Rat, error) {
 	return value, nil
 }
 
-// ParseMoneyCents parses BRL decimal text into cents. At most two decimal
-// places are accepted, and overflow outside int64 is rejected.
+// ParseMoneyCents converte texto monetário em reais para centavos. São aceitas
+// no máximo duas casas decimais e valores fora de int64 são recusados. Não há
+// arredondamento aqui: entradas com precisão menor que um centavo são erros,
+// para que a conversão seja explícita e sem perda de informação.
 func ParseMoneyCents(text string) (int64, error) {
 	normalized, negative, err := normalizeDecimal(text, 2)
 	if err != nil {
@@ -62,6 +74,9 @@ func ParseMoneyCents(text string) (int64, error) {
 		return 0, errors.New("não pode ser negativo")
 	}
 
+	// Completar a fração à direita transforma "12", "12.3" e "12.34" em,
+	// respectivamente, "1200", "1230" e "1234" centavos. A concatenação é
+	// segura porque normalizeDecimal já garantiu apenas dígitos e um separador.
 	parts := strings.Split(normalized, ".")
 	fraction := ""
 	if len(parts) == 2 {
@@ -69,6 +84,8 @@ func ParseMoneyCents(text string) (int64, error) {
 	}
 	fraction += strings.Repeat("0", 2-len(fraction))
 	centsText := parts[0] + fraction
+	// big.Int permite interpretar primeiro sem limite de tamanho; IsInt64 faz
+	// a checagem de overflow antes da conversão usada pelo restante do sistema.
 	cents, ok := new(big.Int).SetString(centsText, 10)
 	if !ok || !cents.IsInt64() {
 		return 0, errors.New("valor fora do intervalo permitido")
@@ -76,8 +93,14 @@ func ParseMoneyCents(text string) (int64, error) {
 	return cents.Int64(), nil
 }
 
-// normalizeDecimal accepts digits with at most one comma or dot. The
-// fractionalLimit is unlimited when negative.
+// normalizeDecimal aceita dígitos com no máximo uma vírgula ou um ponto e
+// devolve uma forma canônica com ponto, compreendida por math/big. Um
+// fractionalLimit negativo significa quantidade ilimitada de casas.
+//
+// O sinal é devolvido separadamente: esta função cuida da sintaxe, enquanto os
+// parsers públicos decidem se valores negativos são permitidos pelo domínio.
+// Separadores de milhares não são inferidos para evitar interpretações
+// ambíguas como tratar "1.234" ora como milhar, ora como decimal.
 func normalizeDecimal(text string, fractionalLimit int) (normalized string, negative bool, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -91,6 +114,8 @@ func normalizeDecimal(text string, fractionalLimit int) (normalized string, nega
 		return "", false, errors.New("número inválido")
 	}
 
+	// A varredura byte a byte é suficiente porque a gramática aceita somente
+	// caracteres ASCII: dígitos, vírgula, ponto e um eventual '-' inicial.
 	separator := byte(0)
 	separatorAt := -1
 	for i := 0; i < len(text); i++ {

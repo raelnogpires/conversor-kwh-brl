@@ -8,7 +8,9 @@ import (
 )
 
 var (
-	// MarineBlue and OffWhite are the two main Rateio Luz brand colors.
+	// MarineBlue e OffWhite são as duas cores principais da marca Rateio Luz.
+	// As demais cores formam uma paleta de apoio compartilhada pelos widgets e
+	// pelas superfícies personalizadas construídas em app.go.
 	MarineBlue  = color.NRGBA{R: 0x12, G: 0x3B, B: 0x5D, A: 0xFF}
 	OffWhite    = color.NRGBA{R: 0xF8, G: 0xF5, B: 0xEC, A: 0xFF}
 	accent      = color.NRGBA{R: 0x35, G: 0xB7, B: 0xC9, A: 0xFF}
@@ -22,15 +24,20 @@ var (
 	successWash = color.NRGBA{R: 0xE8, G: 0xF5, B: 0xF0, A: 0xFF}
 )
 
+// rateioTheme sobrescreve somente os tokens visuais próprios da aplicação e
+// conserva um tema-base para tudo que não precisa de personalização.
 type rateioTheme struct {
 	base fyne.Theme
 }
 
-// NewTheme returns the light, high-contrast Rateio Luz theme.
+// NewTheme retorna o tema claro e de alto contraste do Rateio Luz.
 func NewTheme() fyne.Theme {
 	return &rateioTheme{base: theme.DefaultTheme()}
 }
 
+// Color fornece a paleta da marca para papéis semânticos do Fyne. O parâmetro
+// de variante é ignorado intencionalmente porque este tema é sempre claro; nomes
+// não tratados são delegados ao tema padrão em sua variante clara.
 func (t *rateioTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color.Color {
 	switch name {
 	case theme.ColorNameBackground:
@@ -70,14 +77,19 @@ func (t *rateioTheme) Color(name fyne.ThemeColorName, _ fyne.ThemeVariant) color
 	}
 }
 
+// Font delega ao tema padrão para preservar tipografia, pesos e compatibilidade
+// de caracteres oferecidos pelo Fyne.
 func (t *rateioTheme) Font(style fyne.TextStyle) fyne.Resource {
 	return t.base.Font(style)
 }
 
+// Icon delega ao tema padrão para manter o conjunto semântico de ícones do Fyne.
 func (t *rateioTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
 	return t.base.Icon(name)
 }
 
+// Size ajusta a hierarquia tipográfica, espaçamentos e contornos mais visíveis.
+// Tokens não listados continuam sob responsabilidade do tema padrão.
 func (t *rateioTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNameText:

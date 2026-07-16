@@ -192,6 +192,92 @@ func TestHistoryTabShowsEmptyState(t *testing.T) {
 	}
 }
 
+func TestHistoryDeleteActionRemovesCorrectCardAndUpdatesList(t *testing.T) {
+	store := history.NewStore(filepath.Join(t.TempDir(), "historico.csv"))
+	for index, amount := range []string{"R$ 10,00", "R$ 20,00", "R$ 30,00"} {
+		entry := history.Entry{
+			Date:             time.Date(2026, time.July, 15+index, 12, 0, 0, 0, time.UTC),
+			Consumption1:     "10 kWh",
+			Consumption2:     "20 kWh",
+			TotalAmount:      amount,
+			TotalConsumption: "30 kWh",
+			Share1:           "33,33%",
+			Share2:           "66,67%",
+			Amount1:          "R$ 3,33",
+			Amount2:          "R$ 6,67",
+		}
+		if err := store.Save(entry); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+	s := newTestScreenWithStore(t, store)
+	s.tabs.Select(s.historyTab)
+
+	if len(s.historyDeleteButtons) != 3 {
+		t.Fatalf("delete button count = %d, want 3", len(s.historyDeleteButtons))
+	}
+	if s.historyDeleteButtons[1].Text != "Excluir" || !s.historyDeleteButtons[1].Visible() {
+		t.Fatal("each history card should expose a visible Excluir action")
+	}
+	test.Tap(s.historyDeleteButtons[1])
+
+	entries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(entries) != 2 || entries[0].TotalAmount != "R$ 10,00" || entries[1].TotalAmount != "R$ 30,00" {
+		t.Fatalf("stored entries after deletion = %+v", entries)
+	}
+	if len(s.historyEntries) != 2 || len(s.historyList.Objects) != 2 || len(s.historyDeleteButtons) != 2 {
+		t.Fatalf(
+			"updated history has %d entries, %d cards and %d actions, want 2 of each",
+			len(s.historyEntries), len(s.historyList.Objects), len(s.historyDeleteButtons),
+		)
+	}
+	if s.historyEntries[0].TotalAmount != "R$ 10,00" || s.historyEntries[1].TotalAmount != "R$ 30,00" {
+		t.Fatalf("screen entries after deletion = %+v", s.historyEntries)
+	}
+	if s.historyStatusCard.Visible() {
+		t.Fatal("non-empty history should keep the state card hidden after deletion")
+	}
+}
+
+func TestHistoryDeleteLastCardShowsEmptyState(t *testing.T) {
+	store := history.NewStore(filepath.Join(t.TempDir(), "historico.csv"))
+	entry := history.Entry{
+		Date:             time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC),
+		Consumption1:     "10 kWh",
+		Consumption2:     "20 kWh",
+		TotalAmount:      "R$ 30,00",
+		TotalConsumption: "30 kWh",
+		Share1:           "33,33%",
+		Share2:           "66,67%",
+		Amount1:          "R$ 10,00",
+		Amount2:          "R$ 20,00",
+	}
+	if err := store.Save(entry); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	s := newTestScreenWithStore(t, store)
+	s.tabs.Select(s.historyTab)
+
+	test.Tap(s.historyDeleteButtons[0])
+
+	if len(s.historyEntries) != 0 || len(s.historyList.Objects) != 0 || len(s.historyDeleteButtons) != 0 {
+		t.Fatal("deleting the last entry should clear entries, cards, and actions")
+	}
+	if !s.historyStatusCard.Visible() || s.historyStatusCard.Title != "Nenhum rateio salvo ainda" {
+		t.Fatalf("empty state after deletion = visible %v, title %q", s.historyStatusCard.Visible(), s.historyStatusCard.Title)
+	}
+	entries, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stored entries = %+v, want empty", entries)
+	}
+}
+
 func TestValidationMessagesAreFriendlyAndDoNotShowStaleResult(t *testing.T) {
 	tests := []struct {
 		name        string

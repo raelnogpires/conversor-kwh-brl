@@ -1,4 +1,4 @@
-// Package gui implements the Fyne desktop interface for Rateio Luz.
+// Package gui implementa a interface desktop do Rateio Luz com o toolkit Fyne.
 package gui
 
 import (
@@ -24,22 +24,29 @@ import (
 )
 
 const (
-	// AppName is the human-readable desktop application name.
+	// AppName é o nome legível exibido pela aplicação desktop.
 	AppName = "Rateio Luz"
-	// AppID is the stable identifier used by Fyne and desktop platforms.
+	// AppID é o identificador estável usado pelo Fyne e pelas plataformas desktop.
 	AppID = "com.raelpires.rateioluz"
 )
 
+// screen concentra os widgets e o estado mutável de uma janela. Manter essas
+// referências juntas permite que callbacks atualizem a mesma tela sem misturar
+// regras de validação, cálculo ou persistência à construção visual.
 type screen struct {
+	// Estrutura principal de navegação e rolagem da tela de rateio.
 	window fyne.Window
 	scroll *container.Scroll
 	tabs   *container.AppTabs
 
+	// Abas e dependências injetáveis. now é uma função para que a criação do
+	// registro histórico possa usar um relógio controlado em testes.
 	rateioTab  *container.TabItem
 	historyTab *container.TabItem
 	store      historyStore
 	now        func() time.Time
 
+	// Entradas e ações do formulário que inicia o cálculo.
 	consumption1Entry *widget.Entry
 	consumption2Entry *widget.Entry
 	totalAmountEntry  *widget.Entry
@@ -47,6 +54,8 @@ type screen struct {
 	clearButton       *widget.Button
 	footerLabel       *widget.Label
 
+	// Feedback da última tentativa e snapshot do último cálculo válido. O
+	// snapshot só existe enquanto o resultado visível ainda pode ser salvo.
 	errorBox   *fyne.Container
 	errorLabel *widget.Label
 	resultCard *widget.Card
@@ -54,6 +63,7 @@ type screen struct {
 	saveStatus *widget.Label
 	snapshot   *history.Entry
 
+	// Labels atualizados em conjunto quando o cálculo é concluído com sucesso.
 	totalConsumptionValue *widget.Label
 	share1Value           *widget.Label
 	share2Value           *widget.Label
@@ -61,33 +71,46 @@ type screen struct {
 	amount2Value          *widget.Label
 	reconciliationValue   *widget.Label
 
+	// Estado da aba Histórico. Entradas e botões são guardados na mesma ordem
+	// exibida; cada callback de exclusão captura o índice correspondente no store.
 	refreshHistoryButton *widget.Button
 	historyStatusCard    *widget.Card
 	historyStatusLabel   *widget.Label
 	historyList          *fyne.Container
 	historyScroll        *container.Scroll
 	historyEntries       []history.Entry
+	historyDeleteButtons []*widget.Button
 }
 
+// historyStore é a fronteira injetável entre a GUI e a persistência. A tela
+// depende apenas das operações que usa, o que evita acoplá-la ao arquivo CSV e
+// permite substituir o armazenamento em testes.
 type historyStore interface {
 	Save(history.Entry) error
 	List() ([]history.Entry, error)
+	DeleteAt(index int) error
 }
 
-// NewWindow builds the main Rateio Luz window without starting the event loop.
+// NewWindow constrói a janela principal do Rateio Luz sem iniciar o loop de eventos.
 func NewWindow(application fyne.App) fyne.Window {
 	return newScreen(application).window
 }
 
+// newScreen usa o armazenamento real da aplicação. A criação antecipada da
+// pasta é uma tentativa de preparação; erros definitivos continuam sendo
+// tratados por Save e apresentados ao usuário no momento apropriado.
 func newScreen(application fyne.App) *screen {
 	path := defaultHistoryPath()
-	// Store.Save reports any remaining filesystem error to the user. Creating
-	// the application directory here also supports stores that expect it to
-	// exist already.
+	// Store.Save informa ao usuário qualquer erro restante do sistema de
+	// arquivos. Criar o diretório aqui também atende stores que esperam que ele
+	// já exista.
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
 	return newScreenWithStore(application, history.NewStore(path))
 }
 
+// newScreenWithStore monta a tela com uma implementação de histórico recebida
+// de fora. Primeiro cria o estado compartilhado, depois os componentes que
+// registram callbacks e, por fim, liga tudo à janela.
 func newScreenWithStore(application fyne.App, store historyStore) *screen {
 	s := &screen{
 		window:            application.NewWindow(AppName),
@@ -98,6 +121,8 @@ func newScreenWithStore(application fyne.App, store historyStore) *screen {
 		totalAmountEntry:  newEntry("Ex.: 184,72", theme.DocumentIcon()),
 	}
 
+	// O aviso de erro é construído uma vez e apenas alternado entre oculto e
+	// visível, evitando recriar o layout a cada validação.
 	s.errorLabel = widget.NewLabel("")
 	s.errorLabel.Wrapping = fyne.TextWrapWord
 	s.errorLabel.Importance = widget.DangerImportance
@@ -116,6 +141,8 @@ func newScreenWithStore(application fyne.App, store historyStore) *screen {
 	s.clearButton.Importance = widget.LowImportance
 	s.bindInputEvents()
 
+	// O conteúdo do rateio tem largura máxima para continuar legível em janelas
+	// largas, mas permanece dentro de uma rolagem em alturas menores.
 	content := container.NewVBox(
 		s.buildInputCard(),
 		s.resultCard,
@@ -124,6 +151,8 @@ func newScreenWithStore(application fyne.App, store historyStore) *screen {
 	s.rateioTab = container.NewTabItemWithIcon("Rateio", theme.HomeIcon(), s.scroll)
 	s.historyTab = container.NewTabItemWithIcon("Histórico", theme.HistoryIcon(), s.buildHistoryTab())
 	s.tabs = container.NewAppTabs(s.rateioTab, s.historyTab)
+	// O histórico é carregado sob demanda: abrir a aplicação não faz I/O até o
+	// usuário visitar a aba, e cada nova seleção reflete mudanças no arquivo.
 	s.tabs.OnSelected = func(selected *container.TabItem) {
 		if selected == s.historyTab {
 			s.loadHistory()
@@ -136,6 +165,8 @@ func newScreenWithStore(application fyne.App, store historyStore) *screen {
 	return s
 }
 
+// defaultHistoryPath escolhe um local persistente por usuário e aplica
+// fallbacks seguros quando o sistema não fornece um diretório de configuração.
 func defaultHistoryPath() string {
 	configDir, err := os.UserConfigDir()
 	if err != nil || strings.TrimSpace(configDir) == "" {
@@ -149,6 +180,7 @@ func defaultHistoryPath() string {
 	return filepath.Join(configDir, "rateio-luz", "historico.csv")
 }
 
+// newEntry padroniza as pistas visuais das entradas numéricas.
 func newEntry(placeholder string, icon fyne.Resource) *widget.Entry {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder(placeholder)
@@ -156,12 +188,15 @@ func newEntry(placeholder string, icon fyne.Resource) *widget.Entry {
 	return entry
 }
 
+// colorWithAlpha preserva a cor recebida e ajusta somente sua transparência.
 func colorWithAlpha(value color.Color, alpha uint8) color.NRGBA {
 	converted := color.NRGBAModel.Convert(value).(color.NRGBA)
 	converted.A = alpha
 	return converted
 }
 
+// newSurface cria o padrão visual reutilizado por avisos e blocos de resultado:
+// fundo arredondado, borda e espaçamento interno ao redor do conteúdo.
 func newSurface(fill, stroke color.Color, radius float32, content fyne.CanvasObject) *fyne.Container {
 	background := canvas.NewRectangle(fill)
 	background.CornerRadius = radius
@@ -170,6 +205,7 @@ func newSurface(fill, stroke color.Color, radius float32, content fyne.CanvasObj
 	return container.NewStack(background, container.NewPadded(content))
 }
 
+// sectionLabel produz títulos secundários consistentes dentro dos cartões.
 func sectionLabel(text string) *widget.Label {
 	label := widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	label.SizeName = theme.SizeNameCaptionText
@@ -177,6 +213,8 @@ func sectionLabel(text string) *widget.Label {
 	return label
 }
 
+// fieldGroup reúne marcador, descrição, unidade e entrada em uma única unidade
+// visual para o usuário relacionar claramente cada valor ao seu significado.
 func fieldGroup(marker, title, unit string, entry *widget.Entry) fyne.CanvasObject {
 	markerBackground := canvas.NewRectangle(softBlue)
 	markerBackground.CornerRadius = 9
@@ -198,6 +236,8 @@ func fieldGroup(marker, title, unit string, entry *widget.Entry) fyne.CanvasObje
 	return newSurface(surface, line, 12, container.NewVBox(header, entry))
 }
 
+// resultTile apresenta, lado a lado com o outro morador, valor e proporção de
+// um participante. Os valores são selecionáveis para facilitar sua cópia.
 func resultTile(title string, amount, share *widget.Label) fyne.CanvasObject {
 	amount.Alignment = fyne.TextAlignLeading
 	amount.Selectable = true
@@ -214,10 +254,13 @@ func resultTile(title string, amount, share *widget.Label) fyne.CanvasObject {
 	)
 }
 
+// maxWidthLayout limita apenas a largura do primeiro filho e o centraliza. Esse
+// layout mantém formulários confortáveis sem impedir que ocupem telas estreitas.
 type maxWidthLayout struct {
 	maxWidth float32
 }
 
+// Layout implementa fyne.Layout para posicionar o conteúdo dentro do limite.
 func (l *maxWidthLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 	if len(objects) == 0 {
 		return
@@ -230,6 +273,7 @@ func (l *maxWidthLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 	objects[0].Move(fyne.NewPos((size.Width-width)/2, 0))
 }
 
+// MinSize respeita tanto o mínimo pedido pelo filho quanto a largura máxima.
 func (l *maxWidthLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	if len(objects) == 0 {
 		return fyne.Size{}
@@ -241,10 +285,12 @@ func (l *maxWidthLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	return minimum
 }
 
+// newConstrainedContainer aplica maxWidthLayout a um único conteúdo.
 func newConstrainedContainer(maxWidth float32, content fyne.CanvasObject) *fyne.Container {
 	return container.New(&maxWidthLayout{maxWidth: maxWidth}, content)
 }
 
+// buildHeader monta a identidade visual fixa no topo da janela.
 func (s *screen) buildHeader() fyne.CanvasObject {
 	background := canvas.NewHorizontalGradient(deepNavy, MarineBlue)
 	background.SetMinSize(fyne.NewSize(0, 104))
@@ -275,6 +321,7 @@ func (s *screen) buildHeader() fyne.CanvasObject {
 	return container.NewBorder(nil, accentRule, nil, nil, container.NewStack(background, headerContent))
 }
 
+// buildFooter cria o rodapé compartilhado pelas duas abas.
 func (s *screen) buildFooter() fyne.CanvasObject {
 	s.footerLabel = widget.NewLabel("Noguires-Pires\nAll rights reserved.")
 	s.footerLabel.Alignment = fyne.TextAlignCenter
@@ -285,6 +332,8 @@ func (s *screen) buildFooter() fyne.CanvasObject {
 	return container.NewBorder(separator, nil, nil, nil, container.NewPadded(s.footerLabel))
 }
 
+// buildInputCard organiza os campos, a orientação de formato e as ações do
+// formulário. Os widgets já pertencem a screen para serem usados nos callbacks.
 func (s *screen) buildInputCard() fyne.CanvasObject {
 	residents := container.NewGridWithColumns(2,
 		fieldGroup("01", "Consumo do morador 1", "em kWh", s.consumption1Entry),
@@ -309,6 +358,8 @@ func (s *screen) buildInputCard() fyne.CanvasObject {
 	)
 }
 
+// buildResultCard prepara a área inicialmente oculta que receberá o resultado
+// e o comando de persistência depois de um cálculo válido.
 func (s *screen) buildResultCard() {
 	s.totalConsumptionValue = resultValueLabel()
 	s.share1Value = resultValueLabel()
@@ -363,6 +414,8 @@ func (s *screen) buildResultCard() {
 	s.resultCard.Hide()
 }
 
+// buildHistoryTab monta a barra de atualização, o estado vazio/erro e a lista
+// rolável. Os dados só serão preenchidos por loadHistory.
 func (s *screen) buildHistoryTab() fyne.CanvasObject {
 	title := widget.NewLabelWithStyle("Rateios salvos", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	title.SizeName = theme.SizeNameSubHeadingText
@@ -395,13 +448,18 @@ func (s *screen) buildHistoryTab() fyne.CanvasObject {
 	return container.NewBorder(container.NewPadded(newConstrainedContainer(760, toolbar)), nil, nil, nil, s.historyScroll)
 }
 
+// resultValueLabel padroniza números de resultado alinhados à direita.
 func resultValueLabel() *widget.Label {
 	return widget.NewLabelWithStyle("", fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
 }
 
+// bindInputEvents define o comportamento reativo do formulário: editar remove
+// feedback obsoleto, Enter avança o foco e o último campo dispara o cálculo.
 func (s *screen) bindInputEvents() {
 	entries := []*widget.Entry{s.consumption1Entry, s.consumption2Entry, s.totalAmountEntry}
 	for _, current := range entries {
+		// A variável local garante que cada closure limpe a validação da entrada
+		// que originou seu próprio evento.
 		entry := current
 		entry.OnChanged = func(string) {
 			entry.SetValidationError(nil)
@@ -420,6 +478,9 @@ func (s *screen) bindInputEvents() {
 	}
 }
 
+// calculate coordena o caso de uso da tela. A GUI coleta textos, delega parsing
+// e validação, chama a regra de rateio, formata a saída e só então altera o
+// estado visual; ela não reimplementa regras dos pacotes de domínio.
 func (s *screen) calculate() {
 	s.clearFieldErrors()
 	input, err := validation.ParseAndValidate(
@@ -441,6 +502,8 @@ func (s *screen) calculate() {
 		s.showError("Não foi possível concluir o cálculo. Revise os valores informados.", nil)
 		return
 	}
+	// Esta conferência defensiva impede exibir ou salvar um rateio cujo
+	// arredondamento não reconcilie exatamente com o valor da conta.
 	if result.Amount1Cents+result.Amount2Cents != input.TotalAmountCents {
 		s.showError("Não foi possível conferir o total da conta.", nil)
 		return
@@ -457,6 +520,8 @@ func (s *screen) calculate() {
 		presentation.BRL(result.Amount2Cents),
 		presentation.BRL(input.TotalAmountCents),
 	))
+	// O histórico recebe os mesmos textos apresentados ao usuário. Assim, uma
+	// futura leitura reproduz a visualização sem recalcular valores antigos.
 	s.snapshot = &history.Entry{
 		Date:             s.now(),
 		Consumption1:     presentation.KWh(input.Consumption1),
@@ -476,6 +541,7 @@ func (s *screen) calculate() {
 	s.scroll.ScrollToBottom()
 }
 
+// clear restaura o formulário ao estado inicial e devolve o foco ao primeiro campo.
 func (s *screen) clear() {
 	s.consumption1Entry.SetText("")
 	s.consumption2Entry.SetText("")
@@ -486,6 +552,8 @@ func (s *screen) clear() {
 	s.window.Canvas().Focus(s.consumption1Entry)
 }
 
+// hideFeedback invalida resultado e snapshot sempre que as entradas mudam, para
+// impedir que o usuário salve um cálculo que não corresponde mais ao formulário.
 func (s *screen) hideFeedback() {
 	s.errorBox.Hide()
 	s.resultCard.Hide()
@@ -494,17 +562,21 @@ func (s *screen) hideFeedback() {
 	s.saveStatus.Hide()
 }
 
+// clearFieldErrors remove as marcações de validação dos três campos.
 func (s *screen) clearFieldErrors() {
 	s.consumption1Entry.SetValidationError(nil)
 	s.consumption2Entry.SetValidationError(nil)
 	s.totalAmountEntry.SetValidationError(nil)
 }
 
+// showValidationError traduz o erro de domínio e associa o aviso ao campo adequado.
 func (s *screen) showValidationError(err error) {
 	message := friendlyValidationMessage(err)
 	s.showError(message, s.entryForValidationError(err))
 }
 
+// showError centraliza o estado visual de falha: oculta qualquer resultado
+// anterior, exibe a mensagem e, quando possível, foca a entrada responsável.
 func (s *screen) showError(message string, entry *widget.Entry) {
 	s.resultCard.Hide()
 	s.snapshot = nil
@@ -518,6 +590,9 @@ func (s *screen) showError(message string, entry *widget.Entry) {
 	}
 }
 
+// saveSnapshot persiste apenas o último cálculo ainda válido. Em caso de erro,
+// mantém o botão habilitado para nova tentativa; após sucesso, desabilita-o para
+// evitar salvar o mesmo snapshot duas vezes pelo mesmo resultado.
 func (s *screen) saveSnapshot() {
 	if s.snapshot == nil {
 		return
@@ -539,9 +614,15 @@ func (s *screen) saveSnapshot() {
 	s.saveButton.Disable()
 }
 
+// loadHistory relê todo o store e reconstrói a lista visual. Antes disso, limpa
+// entradas e botões antigos para que os índices de exclusão continuem alinhados
+// à ordem devolvida pela persistência. O store atual faz I/O síncrono; para um
+// histórico pequeno isso simplifica o fluxo, mas uma implementação maior deve
+// mover leitura e regravação para fora do callback da interface.
 func (s *screen) loadHistory() {
 	entries, err := s.store.List()
 	s.historyList.RemoveAll()
+	s.historyDeleteButtons = nil
 	s.historyScroll.ScrollToTop()
 	if err != nil {
 		s.historyEntries = nil
@@ -562,14 +643,28 @@ func (s *screen) loadHistory() {
 	}
 
 	s.historyStatusCard.Hide()
-	for _, entry := range entries {
-		s.historyList.Add(historyCard(entry))
+	for index, entry := range entries {
+		s.historyList.Add(s.historyCard(entry, index))
 	}
 	s.historyList.Refresh()
 	s.historyScroll.Refresh()
 	s.historyScroll.ScrollToTop()
 }
 
+// deleteHistoryEntry delega a exclusão ao store pelo índice exibido. Após o
+// sucesso, recarrega a aba inteira para refletir a nova ordem dos registros.
+func (s *screen) deleteHistoryEntry(index int) {
+	if err := s.store.DeleteAt(index); err != nil {
+		s.showHistoryState(
+			"Não foi possível excluir o rateio",
+			"O registro não pôde ser excluído. Use Atualizar para tentar novamente.",
+		)
+		return
+	}
+	s.loadHistory()
+}
+
+// showHistoryState reutiliza um único cartão para estados vazio e de erro.
 func (s *screen) showHistoryState(title, message string) {
 	s.historyStatusCard.SetTitle(title)
 	s.historyStatusLabel.SetText(message)
@@ -577,7 +672,9 @@ func (s *screen) showHistoryState(title, message string) {
 	s.historyStatusCard.Refresh()
 }
 
-func historyCard(entry history.Entry) fyne.CanvasObject {
+// historyCard transforma uma entrada persistida em um cartão e captura seu
+// índice no callback de exclusão correspondente.
+func (s *screen) historyCard(entry history.Entry, index int) fyne.CanvasObject {
 	date := "Data não informada"
 	if !entry.Date.IsZero() {
 		date = entry.Date.Local().Format("02/01/2006 às 15:04")
@@ -603,15 +700,23 @@ func historyCard(entry history.Entry) fyne.CanvasObject {
 		historyResidentTile("MORADOR 1", entry.Consumption1, entry.Share1, entry.Amount1),
 		historyResidentTile("MORADOR 2", entry.Consumption2, entry.Share2, entry.Amount2),
 	)
-	return widget.NewCard(date, "Rateio proporcional salvo", container.NewVBox(totalLine, totalConsumption, residents))
+	deleteButton := widget.NewButtonWithIcon("Excluir", theme.DeleteIcon(), func() {
+		s.deleteHistoryEntry(index)
+	})
+	deleteButton.Importance = widget.DangerImportance
+	s.historyDeleteButtons = append(s.historyDeleteButtons, deleteButton)
+	actions := container.NewBorder(nil, nil, nil, deleteButton, widget.NewSeparator())
+	return widget.NewCard(date, "Rateio proporcional salvo", container.NewVBox(totalLine, totalConsumption, residents, actions))
 }
 
+// historyValueLabel padroniza valores armazenados, inclusive textos mais longos.
 func historyValueLabel(value string) *widget.Label {
 	label := widget.NewLabelWithStyle(value, fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
 	label.Wrapping = fyne.TextWrapWord
 	return label
 }
 
+// historyResidentTile agrupa consumo, proporção e valor salvo de um morador.
 func historyResidentTile(title, consumption, share, amount string) fyne.CanvasObject {
 	amountLabel := historyValueLabel(amount)
 	amountLabel.Alignment = fyne.TextAlignLeading
@@ -639,6 +744,8 @@ func historyResidentTile(title, consumption, share, amount string) fyne.CanvasOb
 	)
 }
 
+// entryForValidationError converte o prefixo estável dos erros de validação na
+// entrada que deve receber foco. Erros gerais de consumo apontam ao primeiro campo.
 func (s *screen) entryForValidationError(err error) *widget.Entry {
 	message := err.Error()
 	switch {
@@ -654,6 +761,8 @@ func (s *screen) entryForValidationError(err error) *widget.Entry {
 	}
 }
 
+// friendlyValidationMessage adapta mensagens técnicas da validação para a
+// linguagem da interface, sem perder o detalhe necessário para correção.
 func friendlyValidationMessage(err error) string {
 	message := err.Error()
 	if message == "o consumo total deve ser maior que zero" {

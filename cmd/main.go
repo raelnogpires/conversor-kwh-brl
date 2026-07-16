@@ -12,14 +12,20 @@ import (
 )
 
 func main() {
+	// Este é o ponto de entrada do executável de terminal. Os fluxos padrão do
+	// processo ficam restritos a esta borda, enquanto run permanece reutilizável.
 	if err := run(os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "Erro:", err)
 		os.Exit(1)
 	}
 }
 
+// run recebe Reader e Writer por injeção para não depender diretamente do
+// terminal; assim, a mesma interação pode usar arquivos, buffers ou dublês.
 func run(reader io.Reader, writer io.Writer) error {
 	fmt.Fprintln(writer, "Rateio Luz — Conversor kWh → BRL")
+	// A CLI atua como ponte entre as camadas: coleta texto bruto, entrega-o à
+	// validação, encaminha os valores tipados ao cálculo e formata a resposta.
 	raw1, raw2, rawAmount, err := data.ReadInput(reader, writer)
 	if err != nil {
 		return err
@@ -33,6 +39,8 @@ func run(reader io.Reader, writer io.Writer) error {
 		return err
 	}
 
+	// Somente a apresentação conhece a representação textual adequada de kWh,
+	// percentuais e moeda; o resultado do domínio continua independente da CLI.
 	fmt.Fprintln(writer, "\nResultado")
 	fmt.Fprintf(writer, "Consumo total: %s\n", presentation.KWh(result.TotalConsumption))
 	fmt.Fprintf(writer, "Proporção consumidor 1: %s (%s%%)\n", result.Share1.RatString(), presentation.Percentage(result.Share1))
