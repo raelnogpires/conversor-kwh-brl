@@ -30,6 +30,10 @@ const (
 	AppID = "com.raelpires.rateioluz"
 
 	historyPageSize = 25
+
+	// responsiveBreakpoint é a largura mínima em que duas colunas continuam
+	// confortáveis para os textos e campos desta tela.
+	responsiveBreakpoint float32 = 600
 )
 
 // screen concentra os widgets e o estado mutável de uma janela. Manter essas
@@ -306,6 +310,135 @@ func newConstrainedContainer(maxWidth float32, content fyne.CanvasObject) *fyne.
 	return container.New(&maxWidthLayout{maxWidth: maxWidth}, content)
 }
 
+// responsiveColumnCount escolhe uma ou duas colunas conforme a largura útil.
+// O breakpoint único mantém o comportamento previsível entre as diferentes
+// plataformas suportadas pelo Fyne.
+func responsiveColumnCount(width float32) int {
+	if width < responsiveBreakpoint {
+		return 1
+	}
+	return 2
+}
+
+// responsiveGridLayout é um grid de duas colunas que se torna uma coluna em
+// janelas estreitas. A altura mínima considera sempre o pior caso (uma coluna)
+// para que a troca de layout não comprima os cartões nem esconda conteúdo.
+type responsiveGridLayout struct{}
+
+// Layout implementa fyne.Layout com uma quebra simples baseada na largura.
+func (l *responsiveGridLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	visibleCount := 0
+	maxHeight := float32(0)
+	for _, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		visibleCount++
+		maxHeight = fyne.Max(maxHeight, object.MinSize().Height)
+	}
+	if visibleCount == 0 {
+		return
+	}
+
+	columns := responsiveColumnCount(size.Width)
+	padding := theme.Padding()
+	cellWidth := (size.Width - padding*float32(columns-1)) / float32(columns)
+	if cellWidth < 0 {
+		cellWidth = 0
+	}
+	cellHeight := maxHeight
+
+	index := 0
+	for _, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		row, column := index/columns, index%columns
+		object.Move(fyne.NewPos(
+			(cellWidth+padding)*float32(column),
+			(cellHeight+padding)*float32(row),
+		))
+		object.Resize(fyne.NewSize(cellWidth, cellHeight))
+		index++
+	}
+}
+
+// MinSize reserva espaço para o pior caso de uma coluna. Isso garante que os
+// filhos ainda tenham altura suficiente quando o usuário reduzir a janela.
+func (l *responsiveGridLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	visibleCount := 0
+	minimum := fyne.NewSize(0, 0)
+	for _, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		visibleCount++
+		minimum = minimum.Max(object.MinSize())
+	}
+	if visibleCount == 0 {
+		return fyne.Size{}
+	}
+
+	return fyne.NewSize(
+		minimum.Width,
+		minimum.Height*float32(visibleCount)+theme.Padding()*float32(visibleCount-1),
+	)
+}
+
+// newResponsiveGrid cria um grupo que se reorganiza automaticamente ao
+// atravessar o breakpoint horizontal.
+func newResponsiveGrid(objects ...fyne.CanvasObject) *fyne.Container {
+	return container.New(&responsiveGridLayout{}, objects...)
+}
+
+// responsiveHeaderLayout mantém a marca em linha quando há espaço e empilha o
+// logo e a identificação em janelas pequenas.
+type responsiveHeaderLayout struct{}
+
+// Layout implementa fyne.Layout para o cabeçalho adaptativo.
+func (l *responsiveHeaderLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) == 0 {
+		return
+	}
+
+	if responsiveColumnCount(size.Width) == 2 && len(objects) > 1 {
+		padding := theme.Padding()
+		widths := []float32{objects[0].MinSize().Width, objects[1].MinSize().Width}
+		totalWidth := widths[0] + padding + widths[1]
+		x := fyne.Max((size.Width-totalWidth)/2, 0)
+		for index, object := range objects {
+			height := object.MinSize().Height
+			object.Move(fyne.NewPos(x, (size.Height-height)/2))
+			object.Resize(fyne.NewSize(widths[index], size.Height))
+			x += widths[index] + padding
+		}
+		return
+	}
+
+	padding := theme.Padding()
+	y := float32(0)
+	for _, object := range objects {
+		minimum := object.MinSize()
+		object.Move(fyne.NewPos((size.Width-minimum.Width)/2, y))
+		object.Resize(fyne.NewSize(minimum.Width, minimum.Height))
+		y += minimum.Height + padding
+	}
+}
+
+// MinSize garante que o arranjo empilhado caiba quando o cabeçalho entrar no
+// modo estreito, sem impor a soma das larguras ao restante da janela.
+func (l *responsiveHeaderLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	minimum := fyne.NewSize(0, 0)
+	for _, object := range objects {
+		minimum.Width = fyne.Max(minimum.Width, object.MinSize().Width)
+		minimum.Height += object.MinSize().Height
+	}
+	if len(objects) > 1 {
+		minimum.Height += theme.Padding() * float32(len(objects)-1)
+	}
+	return minimum
+}
+
 // buildHeader monta a identidade visual fixa no topo da janela.
 func (s *screen) buildHeader() fyne.CanvasObject {
 	background := canvas.NewHorizontalGradient(deepNavy, MarineBlue)
@@ -328,7 +461,7 @@ func (s *screen) buildHeader() fyne.CanvasObject {
 	subtitle.TextSize = 12
 	subtitle.TextStyle = fyne.TextStyle{Bold: true}
 
-	headerContent := container.NewPadded(container.NewPadded(container.NewHBox(
+	headerContent := container.NewPadded(container.NewPadded(container.New(&responsiveHeaderLayout{},
 		logoTile,
 		container.NewVBox(title, subtitle),
 	)))
@@ -351,7 +484,7 @@ func (s *screen) buildFooter() fyne.CanvasObject {
 // buildInputCard organiza os campos, a orientação de formato e as ações do
 // formulário. Os widgets já pertencem a screen para serem usados nos callbacks.
 func (s *screen) buildInputCard() fyne.CanvasObject {
-	residents := container.NewGridWithColumns(2,
+	residents := newResponsiveGrid(
 		fieldGroup("01", "Consumo do morador 1", "em kWh", s.consumption1Entry),
 		fieldGroup("02", "Consumo do morador 2", "em kWh", s.consumption2Entry),
 	)
@@ -363,7 +496,7 @@ func (s *screen) buildInputCard() fyne.CanvasObject {
 	help.Importance = widget.LowImportance
 	helpBox := container.NewBorder(nil, nil, widget.NewIcon(theme.InfoIcon()), nil, help)
 
-	actions := container.NewGridWithColumns(2,
+	actions := newResponsiveGrid(
 		s.clearButton,
 		s.calculateButton,
 	)
@@ -407,7 +540,7 @@ func (s *screen) buildResultCard() {
 			s.totalConsumptionValue,
 		),
 	)
-	payouts := container.NewGridWithColumns(2,
+	payouts := newResponsiveGrid(
 		resultTile("MORADOR 1", s.amount1Value, s.share1Value),
 		resultTile("MORADOR 2", s.amount2Value, s.share2Value),
 	)
@@ -940,7 +1073,7 @@ func (s *screen) historyCard(entry history.Entry, index int) fyne.CanvasObject {
 		nil,
 		historyValueLabel(entry.TotalConsumption),
 	)
-	residents := container.NewGridWithColumns(2,
+	residents := newResponsiveGrid(
 		historyResidentTile("MORADOR 1", entry.Consumption1, entry.Share1, entry.Amount1),
 		historyResidentTile("MORADOR 2", entry.Consumption2, entry.Share2, entry.Amount2),
 	)

@@ -9,6 +9,7 @@ import (
 
 	"rateio-luz/internal/history"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 )
@@ -132,6 +133,48 @@ func newTestScreenWithStore(t *testing.T, store historyStore) *screen {
 		application.Quit()
 	})
 	return s
+}
+
+func TestResponsiveGridUsesTwoColumnsOnlyAtComfortableWidths(t *testing.T) {
+	application := test.NewApp()
+	application.Settings().SetTheme(NewTheme())
+	t.Cleanup(application.Quit)
+
+	first := widget.NewButton("Primeiro", nil)
+	second := widget.NewButton("Segundo", nil)
+	grid := &responsiveGridLayout{}
+	objects := []fyne.CanvasObject{first, second}
+
+	grid.Layout(objects, fyne.NewSize(responsiveBreakpoint-1, 300))
+	if second.Position().X != first.Position().X || second.Position().Y <= first.Position().Y {
+		t.Fatalf("narrow layout positions = %v and %v, want a single column", first.Position(), second.Position())
+	}
+
+	grid.Layout(objects, fyne.NewSize(responsiveBreakpoint, 300))
+	if second.Position().Y != first.Position().Y || second.Position().X <= first.Position().X {
+		t.Fatalf("wide layout positions = %v and %v, want two columns", first.Position(), second.Position())
+	}
+}
+
+func TestResponsiveHeaderStacksAtNarrowWidths(t *testing.T) {
+	application := test.NewApp()
+	application.Settings().SetTheme(NewTheme())
+	t.Cleanup(application.Quit)
+
+	first := widget.NewButton("Logo", nil)
+	second := widget.NewButton("Rateio Luz", nil)
+	layout := &responsiveHeaderLayout{}
+	objects := []fyne.CanvasObject{first, second}
+
+	layout.Layout(objects, fyne.NewSize(responsiveBreakpoint-1, 180))
+	if second.Position().Y <= first.Position().Y {
+		t.Fatalf("narrow header positions = %v and %v, want stacked content", first.Position(), second.Position())
+	}
+
+	layout.Layout(objects, fyne.NewSize(responsiveBreakpoint, 180))
+	if second.Position().Y != first.Position().Y || second.Position().X <= first.Position().X {
+		t.Fatalf("wide header positions = %v and %v, want inline content", first.Position(), second.Position())
+	}
 }
 
 func TestScreenIdentityAndInitialState(t *testing.T) {
