@@ -2,6 +2,7 @@ package gui
 
 import (
 	"errors"
+	"image/color"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +11,9 @@ import (
 	"rateio-luz/internal/history"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -140,8 +143,8 @@ func TestResponsiveGridUsesTwoColumnsOnlyAtComfortableWidths(t *testing.T) {
 	application.Settings().SetTheme(NewTheme())
 	t.Cleanup(application.Quit)
 
-	first := widget.NewButton("Primeiro", nil)
-	second := widget.NewButton("Segundo", nil)
+	first := canvas.NewRectangle(color.Black)
+	second := canvas.NewRectangle(color.Black)
 	grid := &responsiveGridLayout{}
 	objects := []fyne.CanvasObject{first, second}
 
@@ -156,13 +159,38 @@ func TestResponsiveGridUsesTwoColumnsOnlyAtComfortableWidths(t *testing.T) {
 	}
 }
 
+func TestResponsiveGridMinSizeMatchesCurrentColumnMode(t *testing.T) {
+	application := test.NewApp()
+	application.Settings().SetTheme(NewTheme())
+	t.Cleanup(application.Quit)
+
+	first := canvas.NewRectangle(color.Black)
+	second := canvas.NewRectangle(color.Black)
+	first.SetMinSize(fyne.NewSize(120, 34))
+	second.SetMinSize(fyne.NewSize(120, 34))
+	layout := &responsiveGridLayout{}
+	objects := []fyne.CanvasObject{first, second}
+
+	layout.Layout(objects, fyne.NewSize(responsiveBreakpoint, 200))
+	if got, want := layout.MinSize(objects).Height, float32(34); got != want {
+		t.Fatalf("wide grid min height = %v, want %v", got, want)
+	}
+
+	layout.Layout(objects, fyne.NewSize(responsiveBreakpoint-1, 200))
+	if got, want := layout.MinSize(objects).Height, float32(34)+theme.Padding()+34; got != want {
+		t.Fatalf("narrow grid min height = %v, want %v", got, want)
+	}
+}
+
 func TestResponsiveHeaderStacksAtNarrowWidths(t *testing.T) {
 	application := test.NewApp()
 	application.Settings().SetTheme(NewTheme())
 	t.Cleanup(application.Quit)
 
-	first := widget.NewButton("Logo", nil)
-	second := widget.NewButton("Rateio Luz", nil)
+	first := canvas.NewRectangle(color.Black)
+	second := canvas.NewRectangle(color.Black)
+	first.SetMinSize(fyne.NewSize(80, 30))
+	second.SetMinSize(fyne.NewSize(120, 50))
 	layout := &responsiveHeaderLayout{}
 	objects := []fyne.CanvasObject{first, second}
 
@@ -172,8 +200,15 @@ func TestResponsiveHeaderStacksAtNarrowWidths(t *testing.T) {
 	}
 
 	layout.Layout(objects, fyne.NewSize(responsiveBreakpoint, 180))
-	if second.Position().Y != first.Position().Y || second.Position().X <= first.Position().X {
-		t.Fatalf("wide header positions = %v and %v, want inline content", first.Position(), second.Position())
+	firstCenter := first.Position().Y + first.Size().Height/2
+	secondCenter := second.Position().Y + second.Size().Height/2
+	if secondCenter != firstCenter || second.Position().X <= first.Position().X {
+		t.Fatalf("wide header positions = %v and %v, want centered inline content", first.Position(), second.Position())
+	}
+	for index, object := range objects {
+		if object.Size().Height != object.MinSize().Height || object.Position().Y < 0 || object.Position().Y+object.Size().Height > 180 {
+			t.Fatalf("wide header child %d exceeds bounds: position %v, size %v", index, object.Position(), object.Size())
+		}
 	}
 }
 
@@ -203,6 +238,7 @@ func TestNarrowWindowKeepsHistoryContentWithinAvailableWidth(t *testing.T) {
 
 	s := newTestScreenWithStore(t, store)
 	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
 	s.window.Resize(fyne.NewSize(480, 640))
 
 	if got, want := s.historyScroll.Content.Size().Width, s.historyScroll.Size().Width; got > want {

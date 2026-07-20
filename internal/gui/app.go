@@ -321,9 +321,11 @@ func responsiveColumnCount(width float32) int {
 }
 
 // responsiveGridLayout é um grid de duas colunas que se torna uma coluna em
-// janelas estreitas. A altura mínima considera sempre o pior caso (uma coluna)
-// para que a troca de layout não comprima os cartões nem esconda conteúdo.
-type responsiveGridLayout struct{}
+// janelas estreitas. columns guarda o último modo layoutado para que MinSize
+// não reserve duas linhas quando o grid largo está em uma única linha.
+type responsiveGridLayout struct {
+	columns int
+}
 
 // Layout implementa fyne.Layout com uma quebra simples baseada na largura.
 func (l *responsiveGridLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
@@ -341,6 +343,7 @@ func (l *responsiveGridLayout) Layout(objects []fyne.CanvasObject, size fyne.Siz
 	}
 
 	columns := responsiveColumnCount(size.Width)
+	l.columns = columns
 	padding := theme.Padding()
 	cellWidth := (size.Width - padding*float32(columns-1)) / float32(columns)
 	if cellWidth < 0 {
@@ -363,8 +366,9 @@ func (l *responsiveGridLayout) Layout(objects []fyne.CanvasObject, size fyne.Siz
 	}
 }
 
-// MinSize reserva espaço para o pior caso de uma coluna. Isso garante que os
-// filhos ainda tenham altura suficiente quando o usuário reduzir a janela.
+// MinSize acompanha o número de linhas do último layout. Antes do primeiro
+// layout, assume a configuração confortável de duas colunas, que é o estado
+// inicial da janela.
 func (l *responsiveGridLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	visibleCount := 0
 	minimum := fyne.NewSize(0, 0)
@@ -378,10 +382,15 @@ func (l *responsiveGridLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	if visibleCount == 0 {
 		return fyne.Size{}
 	}
+	columns := l.columns
+	if columns < 1 {
+		columns = 2
+	}
+	rows := (visibleCount + columns - 1) / columns
 
 	return fyne.NewSize(
 		minimum.Width,
-		minimum.Height*float32(visibleCount)+theme.Padding()*float32(visibleCount-1),
+		minimum.Height*float32(rows)+theme.Padding()*float32(rows-1),
 	)
 }
 
@@ -409,7 +418,7 @@ func (l *responsiveHeaderLayout) Layout(objects []fyne.CanvasObject, size fyne.S
 		for index, object := range objects {
 			height := object.MinSize().Height
 			object.Move(fyne.NewPos(x, (size.Height-height)/2))
-			object.Resize(fyne.NewSize(widths[index], size.Height))
+			object.Resize(fyne.NewSize(widths[index], height))
 			x += widths[index] + padding
 		}
 		return
