@@ -177,6 +177,39 @@ func TestResponsiveHeaderStacksAtNarrowWidths(t *testing.T) {
 	}
 }
 
+func TestNarrowWindowKeepsRateioContentWithinAvailableWidth(t *testing.T) {
+	s := newTestScreen(t)
+	s.window.Resize(fyne.NewSize(480, 640))
+
+	if got, want := s.scroll.Content.Size().Width, s.scroll.Size().Width; got > want {
+		t.Fatalf("narrow content width = %v, scroll width = %v; horizontal clipping would be required", got, want)
+	}
+}
+
+func TestNarrowWindowKeepsHistoryContentWithinAvailableWidth(t *testing.T) {
+	store := history.NewStore(filepath.Join(t.TempDir(), "historico.csv"))
+	if err := store.Save(history.Entry{
+		Consumption1:     "105,5 kWh",
+		Consumption2:     "67,2 kWh",
+		TotalAmount:      "R$ 184,72",
+		TotalConsumption: "172,7 kWh",
+		Share1:           "61,09%",
+		Share2:           "38,91%",
+		Amount1:          "R$ 112,84",
+		Amount2:          "R$ 71,88",
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	s := newTestScreenWithStore(t, store)
+	s.tabs.Select(s.historyTab)
+	s.window.Resize(fyne.NewSize(480, 640))
+
+	if got, want := s.historyScroll.Content.Size().Width, s.historyScroll.Size().Width; got > want {
+		t.Fatalf("narrow history width = %v, scroll width = %v; horizontal clipping would be required", got, want)
+	}
+}
+
 func TestScreenIdentityAndInitialState(t *testing.T) {
 	s := newTestScreen(t)
 
