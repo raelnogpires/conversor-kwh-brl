@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,108 @@ import (
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 )
+
+func waitForHistory(t *testing.T, s *screen) {
+	t.Helper()
+	if s.historyOperationDone == nil {
+		t.Fatal("history operation was not started")
+	}
+	select {
+	case <-s.historyOperationDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for history operation")
+	}
+}
+
+type blockingListStore struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingListStore) Save(history.Entry) error {
+	return nil
+}
+
+func (s *blockingListStore) List() ([]history.Entry, error) {
+	close(s.started)
+	<-s.release
+	return []history.Entry{}, nil
+}
+
+func (s *blockingListStore) DeleteAt(int) error {
+	return nil
+}
+
+type blockingSaveStore struct {
+	started     chan struct{}
+	release     chan struct{}
+	listStarted chan struct{}
+}
+
+func (s *blockingSaveStore) Save(history.Entry) error {
+	close(s.started)
+	<-s.release
+	return nil
+}
+
+func (s *blockingSaveStore) List() ([]history.Entry, error) {
+	if s.listStarted != nil {
+		close(s.listStarted)
+	}
+	return []history.Entry{}, nil
+}
+
+func (s *blockingSaveStore) DeleteAt(int) error {
+	return nil
+}
+
+type blockingDeleteStore struct {
+	entry   history.Entry
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingDeleteStore) Save(history.Entry) error {
+	return nil
+}
+
+func (s *blockingDeleteStore) List() ([]history.Entry, error) {
+	return []history.Entry{s.entry}, nil
+}
+
+func (s *blockingDeleteStore) DeleteAt(int) error {
+	close(s.started)
+	<-s.release
+	return nil
+}
+
+type failingListStore struct{}
+
+func (failingListStore) Save(history.Entry) error {
+	return nil
+}
+
+func (failingListStore) List() ([]history.Entry, error) {
+	return nil, errors.New("corrupt history")
+}
+
+func (failingListStore) DeleteAt(int) error {
+	return nil
+}
+
+func historyTestEntry() history.Entry {
+	return history.Entry{
+		Date:             time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC),
+		Consumption1:     "10 kWh",
+		Consumption2:     "20 kWh",
+		TotalAmount:      "R$ 30,00",
+		TotalConsumption: "30 kWh",
+		Share1:           "33,33%",
+		Share2:           "66,67%",
+		Amount1:          "R$ 10,00",
+		Amount2:          "R$ 20,00",
+	}
+}
 
 func newTestScreen(t *testing.T) *screen {
 	t.Helper()
@@ -124,6 +227,7 @@ func TestSaveAndLoadHistoryUsingTemporaryPath(t *testing.T) {
 		t.Fatal("save button should be enabled after calculation")
 	}
 	test.Tap(s.saveButton)
+	waitForHistory(t, s)
 
 	if !s.saveButton.Disabled() {
 		t.Fatal("save button should be disabled after the snapshot is saved")
@@ -157,6 +261,7 @@ func TestSaveAndLoadHistoryUsingTemporaryPath(t *testing.T) {
 	}
 
 	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
 	if len(s.historyEntries) != 1 || len(s.historyList.Objects) != 1 {
 		t.Fatalf("history tab has %d entries and %d cards, want 1", len(s.historyEntries), len(s.historyList.Objects))
 	}
@@ -171,6 +276,7 @@ func TestSaveAndLoadHistoryUsingTemporaryPath(t *testing.T) {
 		t.Fatalf("saving second entry: %v", err)
 	}
 	test.Tap(s.refreshHistoryButton)
+	waitForHistory(t, s)
 	if len(s.historyEntries) != 2 || s.historyEntries[1].TotalAmount != "R$ 90,00" {
 		t.Fatalf("updated history = %+v", s.historyEntries)
 	}
@@ -180,6 +286,7 @@ func TestHistoryTabShowsEmptyState(t *testing.T) {
 	s := newTestScreen(t)
 
 	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
 
 	if !s.historyStatusCard.Visible() {
 		t.Fatal("empty history should show its state card")
@@ -189,6 +296,194 @@ func TestHistoryTabShowsEmptyState(t *testing.T) {
 	}
 	if len(s.historyEntries) != 0 || len(s.historyList.Objects) != 0 {
 		t.Fatal("empty history should not render entry cards")
+	}
+}
+
+func TestHistoryListErrorKeepsErrorState(t *testing.T) {
+	s := newTestScreenWithStore(t, failingListStore{})
+
+	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
+
+	if !s.historyStatusCard.Visible() || s.historyStatusCard.Title != "Não foi possível abrir o histórico" {
+		t.Fatalf("history error state = visible %v, title %q", s.historyStatusCard.Visible(), s.historyStatusCard.Title)
+	}
+	if strings.Contains(s.historyStatusLabel.Text, "Nenhum rateio salvo") {
+		t.Fatalf("read failure was replaced by empty state: %q", s.historyStatusLabel.Text)
+	}
+}
+
+func TestHistoryListRunsInBackgroundAndDisablesActions(t *testing.T) {
+	store := &blockingListStore{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s := newTestScreenWithStore(t, store)
+	s.consumption1Entry.SetText("10")
+	s.consumption2Entry.SetText("20")
+	s.totalAmountEntry.SetText("30")
+	test.Tap(s.calculateButton)
+
+	start := time.Now()
+	s.loadHistory()
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatal("loadHistory blocked while the store was reading")
+	}
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("background List was not started")
+	}
+
+	if !s.historyBusy || !s.refreshHistoryButton.Disabled() || !s.historyActivity.Visible() {
+		t.Fatal("history actions should be disabled while loading")
+	}
+	if !s.saveButton.Disabled() {
+		t.Fatal("save action should be disabled while history is loading")
+	}
+
+	close(store.release)
+	waitForHistory(t, s)
+	if s.historyStatusCard.Title != "Nenhum rateio salvo ainda" {
+		t.Fatalf("empty state title = %q", s.historyStatusCard.Title)
+	}
+	if s.saveButton.Disabled() {
+		t.Fatal("save action should be restored after history loading")
+	}
+}
+
+func TestHistorySaveRunsInBackgroundAndShowsActivity(t *testing.T) {
+	store := &blockingSaveStore{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s := newTestScreenWithStore(t, store)
+	s.consumption1Entry.SetText("10")
+	s.consumption2Entry.SetText("20")
+	s.totalAmountEntry.SetText("30")
+	test.Tap(s.calculateButton)
+
+	start := time.Now()
+	test.Tap(s.saveButton)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatal("saveSnapshot blocked while the store was writing")
+	}
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("background Save was not started")
+	}
+	if !s.saveBusy || !s.saveButton.Disabled() || !s.saveActivity.Visible() {
+		t.Fatal("save action should show activity while writing")
+	}
+
+	close(store.release)
+	waitForHistory(t, s)
+	if !s.saveStatus.Visible() || !strings.Contains(s.saveStatus.Text, "Rateio salvo") {
+		t.Fatalf("save confirmation = %q", s.saveStatus.Text)
+	}
+}
+
+func TestHistoryLoadRequestedDuringSaveRunsAfterSave(t *testing.T) {
+	store := &blockingSaveStore{
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+		listStarted: make(chan struct{}),
+	}
+	s := newTestScreenWithStore(t, store)
+	s.consumption1Entry.SetText("10")
+	s.consumption2Entry.SetText("20")
+	s.totalAmountEntry.SetText("30")
+	test.Tap(s.calculateButton)
+	test.Tap(s.saveButton)
+	saveDone := s.historyOperationDone
+
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("background Save was not started")
+	}
+	s.tabs.Select(s.historyTab)
+	if !s.historyLoadPending {
+		t.Fatal("opening history during Save should queue a load")
+	}
+
+	close(store.release)
+	select {
+	case <-saveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Save did not finish")
+	}
+	select {
+	case <-store.listStarted:
+	case <-time.After(time.Second):
+		t.Fatal("queued List was not started after Save")
+	}
+	waitForHistory(t, s)
+	if !s.historyLoaded || len(s.historyEntries) != 0 {
+		t.Fatalf("queued history load = loaded %v, entries %d", s.historyLoaded, len(s.historyEntries))
+	}
+}
+
+func TestHistoryDeleteRunsInBackgroundAndDisablesCardAction(t *testing.T) {
+	store := &blockingDeleteStore{
+		entry:   historyTestEntry(),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	s := newTestScreenWithStore(t, store)
+	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
+
+	test.Tap(s.historyDeleteButtons[0])
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("background DeleteAt was not started")
+	}
+	if !s.historyBusy || !s.historyDeleteButtons[0].Disabled() || !s.historyActivity.Visible() {
+		t.Fatal("delete action should be disabled while deleting")
+	}
+
+	close(store.release)
+	waitForHistory(t, s)
+	if len(s.historyEntries) != 0 || !s.historyStatusCard.Visible() {
+		t.Fatal("deleting the only entry should show the empty state")
+	}
+}
+
+func TestHistoryListPaginatesRenderedCards(t *testing.T) {
+	store := history.NewStore(filepath.Join(t.TempDir(), "historico.csv"))
+	for index := 0; index < historyPageSize+1; index++ {
+		if err := store.Save(history.Entry{
+			Date:             time.Date(2026, time.July, 1, 12, index, 0, 0, time.UTC),
+			Consumption1:     "10 kWh",
+			Consumption2:     "20 kWh",
+			TotalAmount:      "R$ 30,00",
+			TotalConsumption: "30 kWh",
+			Share1:           "33,33%",
+			Share2:           "66,67%",
+			Amount1:          "R$ 10,00",
+			Amount2:          "R$ 20,00",
+		}); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	s := newTestScreenWithStore(t, store)
+	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
+	if s.historyPageLabel.Text != "Página 1 de 2" || s.nextHistoryButton.Disabled() {
+		t.Fatalf("first history page = %q, next disabled = %v", s.historyPageLabel.Text, s.nextHistoryButton.Disabled())
+	}
+
+	test.Tap(s.nextHistoryButton)
+	if s.historyPage != 1 || len(s.historyList.Objects) != 1 || s.historyPageLabel.Text != "Página 2 de 2" {
+		t.Fatalf("second history page = page %d, %d cards, label %q", s.historyPage, len(s.historyList.Objects), s.historyPageLabel.Text)
+	}
+	test.Tap(s.previousHistoryButton)
+	if s.historyPage != 0 || len(s.historyList.Objects) != historyPageSize {
+		t.Fatalf("previous history page = page %d, %d cards", s.historyPage, len(s.historyList.Objects))
 	}
 }
 
@@ -212,6 +507,7 @@ func TestHistoryDeleteActionRemovesCorrectCardAndUpdatesList(t *testing.T) {
 	}
 	s := newTestScreenWithStore(t, store)
 	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
 
 	if len(s.historyDeleteButtons) != 3 {
 		t.Fatalf("delete button count = %d, want 3", len(s.historyDeleteButtons))
@@ -220,6 +516,7 @@ func TestHistoryDeleteActionRemovesCorrectCardAndUpdatesList(t *testing.T) {
 		t.Fatal("each history card should expose a visible Excluir action")
 	}
 	test.Tap(s.historyDeleteButtons[1])
+	waitForHistory(t, s)
 
 	entries, err := store.List()
 	if err != nil {
@@ -260,8 +557,10 @@ func TestHistoryDeleteLastCardShowsEmptyState(t *testing.T) {
 	}
 	s := newTestScreenWithStore(t, store)
 	s.tabs.Select(s.historyTab)
+	waitForHistory(t, s)
 
 	test.Tap(s.historyDeleteButtons[0])
+	waitForHistory(t, s)
 
 	if len(s.historyEntries) != 0 || len(s.historyList.Objects) != 0 || len(s.historyDeleteButtons) != 0 {
 		t.Fatal("deleting the last entry should clear entries, cards, and actions")

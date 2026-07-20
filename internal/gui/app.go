@@ -28,6 +28,8 @@ const (
 	AppName = "Rateio Luz"
 	// AppID é o identificador estável usado pelo Fyne e pelas plataformas desktop.
 	AppID = "com.raelpires.rateioluz"
+
+	historyPageSize = 25
 )
 
 // screen concentra os widgets e o estado mutável de uma janela. Manter essas
@@ -56,12 +58,16 @@ type screen struct {
 
 	// Feedback da última tentativa e snapshot do último cálculo válido. O
 	// snapshot só existe enquanto o resultado visível ainda pode ser salvo.
-	errorBox   *fyne.Container
-	errorLabel *widget.Label
-	resultCard *widget.Card
-	saveButton *widget.Button
-	saveStatus *widget.Label
-	snapshot   *history.Entry
+	errorBox           *fyne.Container
+	errorLabel         *widget.Label
+	resultCard         *widget.Card
+	saveButton         *widget.Button
+	saveStatus         *widget.Label
+	saveActivity       *widget.Activity
+	snapshot           *history.Entry
+	snapshotGeneration uint64
+	snapshotSaved      bool
+	saveBusy           bool
 
 	// Labels atualizados em conjunto quando o cálculo é concluído com sucesso.
 	totalConsumptionValue *widget.Label
@@ -73,13 +79,23 @@ type screen struct {
 
 	// Estado da aba Histórico. Entradas e botões são guardados na mesma ordem
 	// exibida; cada callback de exclusão captura o índice correspondente no store.
-	refreshHistoryButton *widget.Button
-	historyStatusCard    *widget.Card
-	historyStatusLabel   *widget.Label
-	historyList          *fyne.Container
-	historyScroll        *container.Scroll
-	historyEntries       []history.Entry
-	historyDeleteButtons []*widget.Button
+	refreshHistoryButton  *widget.Button
+	previousHistoryButton *widget.Button
+	nextHistoryButton     *widget.Button
+	historyPageLabel      *widget.Label
+	historyActivity       *widget.Activity
+	historyStatusCard     *widget.Card
+	historyStatusLabel    *widget.Label
+	historyList           *fyne.Container
+	historyScroll         *container.Scroll
+	historyEntries        []history.Entry
+	historyDeleteButtons  []*widget.Button
+	historyLoaded         bool
+	historyPage           int
+	historyBusy           bool
+	historyRequest        uint64
+	historyLoadPending    bool
+	historyOperationDone  chan struct{}
 }
 
 // historyStore é a fronteira injetável entre a GUI e a persistência. A tela
@@ -374,6 +390,8 @@ func (s *screen) buildResultCard() {
 	s.saveButton = widget.NewButtonWithIcon("Salvar no histórico", theme.DocumentSaveIcon(), s.saveSnapshot)
 	s.saveButton.Importance = widget.HighImportance
 	s.saveButton.Disable()
+	s.saveActivity = widget.NewActivity()
+	s.saveActivity.Hide()
 	s.saveStatus = widget.NewLabel("")
 	s.saveStatus.Wrapping = fyne.TextWrapWord
 	s.saveStatus.Alignment = fyne.TextAlignCenter
@@ -407,7 +425,7 @@ func (s *screen) buildResultCard() {
 			payouts,
 			confirmation,
 			widget.NewSeparator(),
-			s.saveButton,
+			container.NewBorder(nil, nil, nil, s.saveActivity, s.saveButton),
 			s.saveStatus,
 		),
 	)
@@ -423,12 +441,37 @@ func (s *screen) buildHistoryTab() fyne.CanvasObject {
 	help.Wrapping = fyne.TextWrapWord
 	help.Importance = widget.LowImportance
 	s.refreshHistoryButton = widget.NewButtonWithIcon("Atualizar", theme.ViewRefreshIcon(), s.loadHistory)
+	s.previousHistoryButton = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
+		if s.historyBusy || s.historyPage == 0 {
+			return
+		}
+		s.historyPage--
+		s.renderHistoryPage()
+	})
+	s.nextHistoryButton = widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() {
+		if s.historyBusy || s.historyPage >= s.historyPageCount()-1 {
+			return
+		}
+		s.historyPage++
+		s.renderHistoryPage()
+	})
+	s.historyPageLabel = widget.NewLabel("")
+	s.historyPageLabel.Alignment = fyne.TextAlignCenter
+	s.historyActivity = widget.NewActivity()
+	s.historyActivity.Hide()
 
+	historyActions := container.NewHBox(
+		s.historyActivity,
+		s.previousHistoryButton,
+		s.historyPageLabel,
+		s.nextHistoryButton,
+		s.refreshHistoryButton,
+	)
 	toolbar := container.NewBorder(
 		nil,
 		nil,
 		nil,
-		container.NewCenter(s.refreshHistoryButton),
+		container.NewCenter(historyActions),
 		container.NewVBox(title, help),
 	)
 
@@ -533,8 +576,9 @@ func (s *screen) calculate() {
 		Amount1:          s.amount1Value.Text,
 		Amount2:          s.amount2Value.Text,
 	}
+	s.snapshotSaved = false
 	s.saveStatus.Hide()
-	s.saveButton.Enable()
+	s.updateSaveAvailability()
 	s.errorBox.Hide()
 	s.resultCard.Show()
 	s.scroll.Refresh()
@@ -558,7 +602,9 @@ func (s *screen) hideFeedback() {
 	s.errorBox.Hide()
 	s.resultCard.Hide()
 	s.snapshot = nil
-	s.saveButton.Disable()
+	s.snapshotSaved = false
+	s.snapshotGeneration++
+	s.updateSaveAvailability()
 	s.saveStatus.Hide()
 }
 
@@ -590,78 +636,276 @@ func (s *screen) showError(message string, entry *widget.Entry) {
 	}
 }
 
-// saveSnapshot persiste apenas o último cálculo ainda válido. Em caso de erro,
-// mantém o botão habilitado para nova tentativa; após sucesso, desabilita-o para
-// evitar salvar o mesmo snapshot duas vezes pelo mesmo resultado.
+// saveSnapshot persiste apenas o último cálculo ainda válido sem bloquear o
+// callback da interface. A cópia local evita que uma edição posterior altere o
+// registro que já está sendo gravado.
 func (s *screen) saveSnapshot() {
-	if s.snapshot == nil {
+	if s.snapshot == nil || s.snapshotSaved || s.saveBusy || s.historyBusy {
 		return
 	}
 
-	if err := s.store.Save(*s.snapshot); err != nil {
-		s.saveStatus.SetText("Não foi possível salvar este rateio. Verifique o local do histórico e tente novamente.")
-		s.saveStatus.Importance = widget.DangerImportance
-		s.saveStatus.Refresh()
-		s.saveStatus.Show()
-		s.saveButton.Enable()
-		return
-	}
-
-	s.saveStatus.SetText("Rateio salvo. Ele já está disponível na aba Histórico.")
-	s.saveStatus.Importance = widget.SuccessImportance
+	entry := *s.snapshot
+	generation := s.snapshotGeneration
+	s.beginHistoryOperation()
+	s.saveBusy = true
+	s.setHistoryBusy(true)
+	s.saveButton.Disable()
+	s.saveStatus.SetText("Salvando rateio...")
+	s.saveStatus.Importance = widget.WarningImportance
 	s.saveStatus.Refresh()
 	s.saveStatus.Show()
-	s.saveButton.Disable()
+	s.saveActivity.Start()
+	s.saveActivity.Show()
+
+	go func() {
+		err := s.store.Save(entry)
+		fyne.Do(func() {
+			s.saveActivity.Stop()
+			s.saveActivity.Hide()
+			if generation != s.snapshotGeneration {
+				s.saveBusy = false
+				if s.snapshot != nil {
+					s.updateSaveAvailability()
+				}
+				s.completeHistoryOperation()
+				return
+			}
+			if err != nil {
+				s.saveStatus.SetText("Não foi possível salvar este rateio. Verifique o local do histórico e tente novamente.")
+				s.saveStatus.Importance = widget.DangerImportance
+				s.saveStatus.Refresh()
+				s.saveStatus.Show()
+				s.saveBusy = false
+				s.completeHistoryOperation()
+				return
+			}
+
+			s.saveStatus.SetText("Rateio salvo. Ele já está disponível na aba Histórico.")
+			s.saveStatus.Importance = widget.SuccessImportance
+			s.saveStatus.Refresh()
+			s.saveStatus.Show()
+			s.snapshotSaved = true
+			if s.historyLoaded {
+				s.historyEntries = append(s.historyEntries, entry)
+				s.renderHistoryPage()
+			}
+			s.saveBusy = false
+			s.completeHistoryOperation()
+			s.saveButton.Disable()
+		})
+	}()
 }
 
-// loadHistory relê todo o store e reconstrói a lista visual. Antes disso, limpa
-// entradas e botões antigos para que os índices de exclusão continuem alinhados
-// à ordem devolvida pela persistência. O store atual faz I/O síncrono; para um
-// histórico pequeno isso simplifica o fluxo, mas uma implementação maior deve
-// mover leitura e regravação para fora do callback da interface.
+// loadHistory faz a leitura fora do callback da interface. A lista visual é
+// paginada para materializar no máximo historyPageSize cartões por vez.
 func (s *screen) loadHistory() {
-	entries, err := s.store.List()
-	s.historyList.RemoveAll()
-	s.historyDeleteButtons = nil
-	s.historyScroll.ScrollToTop()
-	if err != nil {
-		s.historyEntries = nil
-		s.showHistoryState(
-			"Não foi possível abrir o histórico",
-			"O arquivo não pôde ser lido. Verifique-o e use Atualizar para tentar novamente.",
-		)
+	if s.historyBusy {
+		s.historyLoadPending = true
 		return
 	}
 
-	s.historyEntries = entries
-	if len(entries) == 0 {
+	s.historyBusy = true
+	s.beginHistoryOperation()
+	s.historyRequest++
+	request := s.historyRequest
+	s.setHistoryBusy(true)
+	s.historyStatusCard.SetTitle("Carregando histórico")
+	s.historyStatusLabel.SetText("Lendo os rateios salvos...")
+	s.historyStatusCard.Show()
+	s.historyStatusCard.Refresh()
+
+	go func() {
+		entries, err := s.store.List()
+		fyne.Do(func() {
+			if request != s.historyRequest {
+				s.completeHistoryOperation()
+				return
+			}
+			if err != nil {
+				s.historyEntries = nil
+				s.historyLoaded = false
+				s.historyPage = 0
+				s.showHistoryState(
+					"Não foi possível abrir o histórico",
+					"O arquivo não pôde ser lido. Verifique-o e use Atualizar para tentar novamente.",
+				)
+				s.clearHistoryPage()
+				s.completeHistoryOperation()
+				return
+			}
+
+			s.historyEntries = entries
+			s.historyLoaded = true
+			s.historyPage = 0
+			s.renderHistoryPage()
+			s.completeHistoryOperation()
+		})
+	}()
+}
+
+// deleteHistoryEntry delega a exclusão ao store pelo índice exibido. Após o
+// sucesso, remove somente a entrada da memória e renderiza a página atual.
+func (s *screen) deleteHistoryEntry(index int) {
+	if s.historyBusy || index < 0 || index >= len(s.historyEntries) {
+		return
+	}
+
+	s.setHistoryBusy(true)
+	s.beginHistoryOperation()
+	s.historyStatusCard.SetTitle("Excluindo rateio")
+	s.historyStatusLabel.SetText("Atualizando o histórico...")
+	s.historyStatusCard.Show()
+	s.historyStatusCard.Refresh()
+
+	go func() {
+		err := s.store.DeleteAt(index)
+		fyne.Do(func() {
+			if err != nil {
+				s.showHistoryState(
+					"Não foi possível excluir o rateio",
+					"O registro não pôde ser excluído. Use Atualizar para tentar novamente.",
+				)
+				s.completeHistoryOperation()
+				return
+			}
+
+			s.historyEntries = append(s.historyEntries[:index], s.historyEntries[index+1:]...)
+			if s.historyPage >= s.historyPageCount() {
+				s.historyPage = s.historyPageCount() - 1
+			}
+			s.renderHistoryPage()
+			s.completeHistoryOperation()
+		})
+	}()
+}
+
+func (s *screen) beginHistoryOperation() {
+	s.historyOperationDone = make(chan struct{})
+}
+
+func (s *screen) finishHistoryOperation() {
+	close(s.historyOperationDone)
+}
+
+func (s *screen) completeHistoryOperation() {
+	s.setHistoryBusy(false)
+	s.finishHistoryOperation()
+	if s.historyLoadPending {
+		s.historyLoadPending = false
+		s.loadHistory()
+	}
+}
+
+func (s *screen) updateSaveAvailability() {
+	if s.snapshot == nil || s.snapshotSaved || s.saveBusy || s.historyBusy {
+		s.saveButton.Disable()
+		return
+	}
+	s.saveButton.Enable()
+}
+
+func (s *screen) clearHistoryPage() {
+	s.historyList.RemoveAll()
+	s.historyDeleteButtons = nil
+	s.updateHistoryPagination()
+	s.historyList.Refresh()
+	s.historyScroll.Refresh()
+}
+
+func (s *screen) setHistoryBusy(busy bool) {
+	if busy {
+		s.historyBusy = true
+		s.historyActivity.Start()
+		s.historyActivity.Show()
+		s.refreshHistoryButton.Disable()
+		s.previousHistoryButton.Disable()
+		s.nextHistoryButton.Disable()
+		for _, button := range s.historyDeleteButtons {
+			button.Disable()
+		}
+		s.updateSaveAvailability()
+		return
+	}
+
+	s.historyActivity.Stop()
+	s.historyActivity.Hide()
+	s.refreshHistoryButton.Enable()
+	s.updateHistoryPaginationFor(false)
+	for _, button := range s.historyDeleteButtons {
+		button.Enable()
+	}
+	s.historyBusy = false
+	s.updateSaveAvailability()
+}
+
+func (s *screen) historyPageCount() int {
+	if len(s.historyEntries) == 0 {
+		return 1
+	}
+	return (len(s.historyEntries) + historyPageSize - 1) / historyPageSize
+}
+
+func (s *screen) updateHistoryPagination() {
+	s.updateHistoryPaginationFor(s.historyBusy)
+}
+
+func (s *screen) updateHistoryPaginationFor(busy bool) {
+	pageCount := s.historyPageCount()
+	if len(s.historyEntries) == 0 {
+		s.historyPageLabel.SetText("Página 0 de 0")
+	} else {
+		s.historyPageLabel.SetText(fmt.Sprintf("Página %d de %d", s.historyPage+1, pageCount))
+	}
+	if busy {
+		s.previousHistoryButton.Disable()
+		s.nextHistoryButton.Disable()
+		return
+	}
+	if s.historyPage == 0 {
+		s.previousHistoryButton.Disable()
+	} else {
+		s.previousHistoryButton.Enable()
+	}
+	if s.historyPage >= pageCount-1 || len(s.historyEntries) == 0 {
+		s.nextHistoryButton.Disable()
+	} else {
+		s.nextHistoryButton.Enable()
+	}
+}
+
+func (s *screen) renderHistoryPage() {
+	if len(s.historyEntries) == 0 {
+		s.historyList.RemoveAll()
+		s.historyDeleteButtons = nil
 		s.showHistoryState(
 			"Nenhum rateio salvo ainda",
 			"Faça um cálculo na aba Rateio e escolha “Salvar no histórico”.",
 		)
+		s.updateHistoryPagination()
+		s.historyList.Refresh()
+		s.historyScroll.Refresh()
 		return
+	}
+
+	if s.historyPage >= s.historyPageCount() {
+		s.historyPage = s.historyPageCount() - 1
+	}
+	start := s.historyPage * historyPageSize
+	end := start + historyPageSize
+	if end > len(s.historyEntries) {
+		end = len(s.historyEntries)
 	}
 
 	s.historyStatusCard.Hide()
-	for index, entry := range entries {
-		s.historyList.Add(s.historyCard(entry, index))
+	s.historyList.RemoveAll()
+	s.historyDeleteButtons = nil
+	for index := start; index < end; index++ {
+		s.historyList.Add(s.historyCard(s.historyEntries[index], index))
 	}
+	s.updateHistoryPagination()
 	s.historyList.Refresh()
 	s.historyScroll.Refresh()
 	s.historyScroll.ScrollToTop()
-}
-
-// deleteHistoryEntry delega a exclusão ao store pelo índice exibido. Após o
-// sucesso, recarrega a aba inteira para refletir a nova ordem dos registros.
-func (s *screen) deleteHistoryEntry(index int) {
-	if err := s.store.DeleteAt(index); err != nil {
-		s.showHistoryState(
-			"Não foi possível excluir o rateio",
-			"O registro não pôde ser excluído. Use Atualizar para tentar novamente.",
-		)
-		return
-	}
-	s.loadHistory()
 }
 
 // showHistoryState reutiliza um único cartão para estados vazio e de erro.

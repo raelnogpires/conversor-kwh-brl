@@ -42,15 +42,26 @@ cálculo, formatação monetária ou persistência do histórico.
 5. Em sucesso, `presentation` formata kWh, percentuais e reais. Esses textos
    atualizam os labels e formam um `history.Entry` transitório; o usuário ainda
    precisa escolher **Salvar no histórico**.
-6. `saveSnapshot` delega a gravação ao store. Falhas mantêm a tentativa disponível;
-   sucesso desabilita o botão para evitar duplicação imediata.
-7. Ao selecionar ou atualizar a aba Histórico, `loadHistory` relê o store e
-   reconstrói os cartões. Cada botão **Excluir** captura o índice da entrada na
-   ordem carregada, chama `DeleteAt` e recarrega a lista após a remoção.
+6. `saveSnapshot` copia o snapshot e delega a gravação ao store em background.
+   Enquanto isso, as ações de histórico ficam desabilitadas e uma atividade é
+   exibida; o resultado volta à GUI por `fyne.Do`. Falhas mantêm a tentativa
+   disponível; sucesso desabilita o botão para evitar duplicação imediata.
+7. Ao selecionar ou atualizar a aba Histórico, `loadHistory` relê o store em
+   background e publica o resultado na GUI por `fyne.Do`. A lista visual é
+   paginada em blocos de 25 cartões. Cada botão **Excluir** captura o índice da
+   entrada na ordem carregada, chama `DeleteAt` em background e, após a remoção,
+   atualiza apenas a página corrente em memória.
+8. Se uma carga for solicitada enquanto outra operação de histórico está ativa,
+   a tela registra a solicitação e inicia `List` assim que a operação atual
+   termina. Falhas de leitura preservam o cartão de erro em vez de apresentá-las
+   como histórico vazio.
 
-As operações do store são síncronas no callback da GUI. Isso é suficiente para
-o histórico pequeno previsto atualmente, mas pode bloquear a janela se o CSV
-crescer muito ou o armazenamento estiver lento.
+As operações do store continuam síncronas dentro do próprio contrato de
+persistência, mas são executadas fora do callback da GUI. A tela serializa as
+operações por estado ocupado, exibe atividade e limita a quantidade de cartões
+materializados por página. O CSV ainda é lido integralmente por `List`; a
+paginação reduz o custo de construção e atualização visual, não o custo de
+leitura do arquivo.
 
 ## Integrações
 
